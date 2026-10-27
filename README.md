@@ -44,11 +44,16 @@ Available tools:
 - `list_lark_wiki_nodes`: list pages under a knowledge base or parent page.
 - `read_lark_wiki`: read a Lark wiki URL or wiki node token.
 - `read_lark_document`: read a Lark `/docx/` or `/docs/` URL.
+- `list_lark_document_blocks`: list direct document blocks and their IDs for precise edits.
 - `list_lark_drive_files`: list files in a Lark Drive folder.
 - `list_all_lark_files`: recursively list accessible files and folders with source URLs and metadata.
 - `read_lark_file`: extract text from PDF, Word, Excel, CSV, Markdown, or text files.
 - `search_lark_wiki`: search knowledge-base page titles.
 - `search_lark_drive_files`: search file names in the Drive root or a specified folder.
 - `save_draft_to_lark`: after `confirmed=true`, create a new Lark document, write a draft into it, and attempt to read it back for verification. It never edits or deletes the source document.
+- `append_to_lark_document`: after `confirmed=true`, append content to an existing Lark document without replacing or deleting existing content.
+- `edit_lark_document`: after `confirmed=true`, either replace all direct content blocks (`mode=replace_all`) or replace the text of one paragraph block (`mode=replace_block`, requires `block_id`).
 
-The write tool is intentionally narrow: it does not edit or delete existing documents, and the server does not call it automatically during startup or read tests. Recursive scans and file counts are bounded to avoid accidentally loading an unbounded Drive. There is no application-identity fallback: missing or invalid `connection_id` blocks the operation.
+When `save_draft_to_lark` creates a document, the service also grants the current OAuth user `edit` permission on that document. The app must have the document permission scope required by the Lark permissions API (the example configuration includes `drive:drive`). If granting permission fails, the document is still created and the tool response reports the failure explicitly.
+
+The write tools are intentionally narrow: they require `confirmed=true`. `replace_all` is destructive to the document's direct content blocks, so use it only after displaying the replacement draft and confirming it. The server does not call write tools automatically during startup or read tests. Recursive scans and file counts are bounded to avoid accidentally loading an unbounded Drive. There is no application-identity fallback: missing or invalid `connection_id` blocks the operation.

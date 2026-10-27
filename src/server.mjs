@@ -211,6 +211,13 @@ async function getAccessToken(connectionId = "") {
   return getTenantAccessToken();
 }
 
+function getConnection(connectionId = "") {
+  if (!connectionId) throw new Error("Lark OAuth connection_id is required; connect Lark before using this tool");
+  const connection = userConnections.get(connectionId);
+  if (!connection) throw new Error("Lark member OAuth connection not found; connect Lark before using this tool");
+  return connection;
+}
+
 async function getLarkUserInfo(accessToken) {
   const response = await fetchLark(`${baseUrl}/open-apis/authen/v1/user_info`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -508,6 +515,112 @@ async function searchDriveFileNames(query, folderToken = "", pageSize = 200, con
   };
 }
 
+async function grantDocumentEditAccess(documentToken, connectionId = "") {
+  const connection = getConnection(connectionId);
+  const openId = connection.user?.open_id;
+  if (!openId) throw new Error("The connected Lark user has no open_id; cannot grant document edit access");
+
+  const query = new URLSearchParams({ type: "docx", need_notification: "false" });
+  return larkRequest(
+    `/open-apis/drive/v1/permissions/${encodeURIComponent(documentToken)}/members?${query}`,
+    "POST",
+    { member_type: "openid", member_id: openId, perm: "edit" },
+    connectionId,
+  );
+}
+
+async function appendToLarkDocument(documentToken, content, connectionId = "") {
+  const block = paragraphBlock(content);
+  const body = await larkRequest(
+    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children`,
+    "POST",
+    { children: [block], index: -1 },
+    connectionId,
+  );
+  return {
+    document_id: documentToken,
+    appended_content: content,
+    result: body.data ?? body,
+    source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
+  };
+}
+
+function paragraphBlock(content) {
+  return {
+    block_type: 2,
+    paragraph: {
+      elements: content ? [{ text_run: { content } }] : [],
+    },
+  };
+}
+
+async function getDocumentChildren(documentToken, connectionId = "") {
+  const query = new URLSearchParams({ page_size: "500" });
+  const body = await larkGet(
+    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children?${query}`,
+    connectionId,
+  );
+  return body.data ?? body;
+}
+
+async function replaceLarkDocumentContent(documentToken, content, connectionId = "") {
+  const children = await getDocumentChildren(documentToken, connectionId);
+  const existingBlocks = children.items ?? children.blocks ?? [];
+  if (children.has_more) {
+    throw new Error("The document has more than 500 direct blocks; refusing to replace it in one operation");
+  }
+
+  const lines = content.split(/\r?\n/);
+  if (lines.length > 500) {
+    throw new Error("Replacement content has more than 500 paragraphs; split it into smaller edits");
+  }
+
+  if (existingBlocks.length > 0) {
+    await larkRequest(
+      `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children/batch_delete`,
+      "DELETE",
+      { start_index: 0, end_index: existingBlocks.length },
+      connectionId,
+    );
+  }
+
+  const created = await larkRequest(
+    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children`,
+    "POST",
+    { children: lines.map(paragraphBlock), index: 0 },
+    connectionId,
+  );
+  return {
+    document_id: documentToken,
+    mode: "replace_all",
+    replaced_block_count: existingBlocks.length,
+    paragraph_count: lines.length,
+    result: created.data ?? created,
+    source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
+  };
+}
+
+async function replaceLarkDocumentBlock(documentToken, blockId, content, connectionId = "") {
+  const body = await larkRequest(
+    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(blockId)}`,
+    "PATCH",
+    {
+      update_text_elements: {
+        elements: content ? [{ text_run: { content } }] : [],
+      },
+    },
+    connectionId,
+  );
+  return {
+    document_id: documentToken,
+    block_id: blockId,
+    mode: "replace_block",
+    content,
+    result: body.data ?? body,
+    source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
+  };
+}
+
 async function createLarkDocument({ title, content, folderToken = "", sourceUrls = [], connectionId = "" }) {
   const sourceSection = sourceUrls.length > 0 ? `\n\n## 来源\n\n${sourceUrls.map((url) => `- ${url}`).join("\n")}` : "";
   const created = await larkRequest("/open-apis/docs_ai/v1/documents", "POST", {
@@ -538,6 +651,16 @@ async function createLarkDocument({ title, content, folderToken = "", sourceUrls
     url: document.url ?? `https://${new URL(baseUrl).hostname}/docx/${document.document_id}`,
     folder_token: folderToken || null,
   };
+
+  try {
+    await grantDocumentEditAccess(document.document_id, connectionId);
+    result.permission_granted = true;
+    result.permission = "当前 OAuth 用户已获得编辑权限";
+  } catch (error) {
+    result.permission_granted = false;
+    result.permission = "文档已创建，但当前 OAuth 用户编辑权限授予失败";
+    result.permission_error = error.message;
+  }
 
   try {
     const verification = await readLarkDocument(document.document_id, connectionId);
@@ -580,6 +703,39 @@ function createServer() {
     },
     async ({ document_url_or_token, connection_id }) => {
       const result = await readLarkDocument(document_url_or_token, resolveConnectionId(connection_id));
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "list_lark_document_blocks",
+    {
+      title: "List blocks in a Lark document",
+      description: "List the direct blocks in a Lark document, including block IDs and text, so a later precise block edit can target the correct paragraph.",
+      inputSchema: {
+        document_url_or_token: z.string().min(1),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ document_url_or_token, connection_id }) => {
+      const documentToken = docTokenFromInput(document_url_or_token);
+      const data = await getDocumentChildren(documentToken, resolveConnectionId(connection_id));
+      const blocks = (data.items ?? data.blocks ?? []).map((block) => ({
+        block_id: block.block_id,
+        block_type: block.block_type,
+        text: (block.text?.elements ?? [])
+          .map((element) => element.text_run?.content ?? "")
+          .join(""),
+      }));
+      const result = {
+        document_id: documentToken,
+        blocks,
+        has_more: Boolean(data.has_more),
+        next_page_token: data.next_page_token ?? null,
+      };
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
@@ -795,6 +951,75 @@ function createServer() {
         sourceUrls: source_urls ?? [],
         connectionId: resolveConnectionId(connection_id),
       });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "append_to_lark_document",
+    {
+      title: "Append content to an existing Lark document",
+      description:
+        "After explicit user confirmation, append content to an existing Lark document. It does not replace or delete existing content, so it is safe for incremental updates.",
+      inputSchema: {
+        confirmed: z.boolean(),
+        document_url_or_token: z.string().min(1),
+        content: z.string().min(1).max(100000),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ confirmed, document_url_or_token, content, connection_id }) => {
+      if (!confirmed) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "未确认修改原文档。请先向用户展示将追加的内容，并在用户明确确认后再次调用 confirmed=true。" }],
+        };
+      }
+      const documentToken = docTokenFromInput(document_url_or_token);
+      const result = await appendToLarkDocument(documentToken, content, resolveConnectionId(connection_id));
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "edit_lark_document",
+    {
+      title: "Edit an existing Lark document precisely",
+      description:
+        "After explicit user confirmation, either replace all direct content blocks in a Lark document or replace the text in one specified paragraph block. replace_block requires a block_id obtained from the document block API.",
+      inputSchema: {
+        confirmed: z.boolean(),
+        mode: z.enum(["replace_all", "replace_block"]),
+        document_url_or_token: z.string().min(1),
+        content: z.string().max(100000),
+        block_id: z.string().min(1).optional(),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ confirmed, mode, document_url_or_token, content, block_id, connection_id }) => {
+      if (!confirmed) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "未确认编辑原文档。请先向用户展示修改内容，并在用户明确确认后再次调用 confirmed=true。" }],
+        };
+      }
+      if (mode === "replace_block" && !block_id) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "mode=replace_block 时必须提供 block_id。" }],
+        };
+      }
+      const documentToken = docTokenFromInput(document_url_or_token);
+      const connectionId = resolveConnectionId(connection_id);
+      const result = mode === "replace_all"
+        ? await replaceLarkDocumentContent(documentToken, content, connectionId)
+        : await replaceLarkDocumentBlock(documentToken, block_id, content, connectionId);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
