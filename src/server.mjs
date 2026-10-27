@@ -237,6 +237,16 @@ function createLarkOAuthUrl({ state, userId = "" }) {
   return `${baseUrl}/open-apis/authen/v1/authorize?${query}`;
 }
 
+function escapeXmlText(value) {
+  return value.replace(/[<>&'\"]/g, (character) => ({
+    "<": "&lt;",
+    ">": "&gt;",
+    "&": "&amp;",
+    "'": "&apos;",
+    '\"': "&quot;",
+  })[character]);
+}
+
 async function larkGet(path, connectionId = "") {
   const token = await getAccessToken(connectionId);
   const response = await fetch(`${baseUrl}${path}`, {
@@ -530,28 +540,8 @@ async function grantDocumentEditAccess(documentToken, connectionId = "") {
 }
 
 async function appendToLarkDocument(documentToken, content, connectionId = "") {
-  const block = paragraphBlock(content);
-  const body = await larkRequest(
-    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children`,
-    "POST",
-    { children: [block], index: -1 },
-    connectionId,
-  );
-  return {
-    document_id: documentToken,
-    appended_content: content,
-    result: body.data ?? body,
-    source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
-  };
-}
-
-function paragraphBlock(content) {
-  return {
-    block_type: 2,
-    paragraph: {
-      elements: content ? [{ text_run: { content } }] : [],
-    },
-  };
+  const result = await updateLarkDocument(documentToken, { command: "append", content }, connectionId);
+  return { ...result, appended_content: content };
 }
 
 async function getDocumentChildren(documentToken, connectionId = "") {
@@ -563,59 +553,23 @@ async function getDocumentChildren(documentToken, connectionId = "") {
   return body.data ?? body;
 }
 
-async function replaceLarkDocumentContent(documentToken, content, connectionId = "") {
-  const children = await getDocumentChildren(documentToken, connectionId);
-  const existingBlocks = children.items ?? children.blocks ?? [];
-  if (children.has_more) {
-    throw new Error("The document has more than 500 direct blocks; refusing to replace it in one operation");
-  }
-
-  const lines = content.split(/\r?\n/);
-  if (lines.length > 500) {
-    throw new Error("Replacement content has more than 500 paragraphs; split it into smaller edits");
-  }
-
-  if (existingBlocks.length > 0) {
-    await larkRequest(
-      `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children/batch_delete`,
-      "DELETE",
-      { start_index: 0, end_index: existingBlocks.length },
-      connectionId,
-    );
-  }
-
-  const created = await larkRequest(
-    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(documentToken)}/children`,
-    "POST",
-    { children: lines.map(paragraphBlock), index: 0 },
-    connectionId,
-  );
-  return {
-    document_id: documentToken,
-    mode: "replace_all",
-    replaced_block_count: existingBlocks.length,
-    paragraph_count: lines.length,
-    result: created.data ?? created,
-    source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
-  };
-}
-
-async function replaceLarkDocumentBlock(documentToken, blockId, content, connectionId = "") {
+async function updateLarkDocument(documentToken, { command, content, blockId = "" }, connectionId = "") {
   const body = await larkRequest(
-    `/open-apis/docx/v1/documents/${encodeURIComponent(documentToken)}/blocks/${encodeURIComponent(blockId)}`,
-    "PATCH",
+    `/open-apis/docs_ai/v1/documents/${encodeURIComponent(documentToken)}`,
+    "PUT",
     {
-      update_text_elements: {
-        elements: content ? [{ text_run: { content } }] : [],
-      },
+      format: "markdown",
+      command,
+      content,
+      revision_id: -1,
+      ...(blockId ? { block_id: blockId } : {}),
     },
     connectionId,
   );
   return {
     document_id: documentToken,
-    block_id: blockId,
-    mode: "replace_block",
-    content,
+    mode: command === "overwrite" ? "replace_all" : "replace_block",
+    block_id: blockId || null,
     result: body.data ?? body,
     source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
   };
@@ -625,7 +579,7 @@ async function createLarkDocument({ title, content, folderToken = "", sourceUrls
   const sourceSection = sourceUrls.length > 0 ? `\n\n## 来源\n\n${sourceUrls.map((url) => `- ${url}`).join("\n")}` : "";
   const created = await larkRequest("/open-apis/docs_ai/v1/documents", "POST", {
     format: "markdown",
-    content: `# ${title}\n\n${content}${sourceSection}`,
+    content: `<title>${escapeXmlText(title)}</title>\n\n${content}${sourceSection}`,
     extra_param: JSON.stringify({ open_create_async: true }),
     ...(folderToken ? { parent_token: folderToken } : {}),
   }, connectionId);
@@ -927,7 +881,7 @@ function createServer() {
     {
       title: "Save a draft as a new Lark document",
       description:
-        "After explicit user confirmation, create a new Lark document and write the supplied draft into it. Never edits or deletes the source document.",
+        "Use only when the user explicitly asks to create a NEW Lark document. After confirmation, create a new document and write the supplied draft into it. Never use this tool to modify an existing document.",
       inputSchema: {
         confirmed: z.boolean(),
         title: z.string().min(1).max(200),
@@ -992,7 +946,7 @@ function createServer() {
     {
       title: "Edit an existing Lark document precisely",
       description:
-        "After explicit user confirmation, either replace all direct content blocks in a Lark document or replace the text in one specified paragraph block. replace_block requires a block_id obtained from the document block API.",
+        "After explicit user confirmation, update an existing Lark document with the official document update API. mode=replace_all overwrites the document body; mode=replace_block replaces one specified paragraph block. replace_block requires a block_id obtained from list_lark_document_blocks.",
       inputSchema: {
         confirmed: z.boolean(),
         mode: z.enum(["replace_all", "replace_block"]),
@@ -1018,8 +972,8 @@ function createServer() {
       const documentToken = docTokenFromInput(document_url_or_token);
       const connectionId = resolveConnectionId(connection_id);
       const result = mode === "replace_all"
-        ? await replaceLarkDocumentContent(documentToken, content, connectionId)
-        : await replaceLarkDocumentBlock(documentToken, block_id, content, connectionId);
+        ? await updateLarkDocument(documentToken, { command: "overwrite", content }, connectionId)
+        : await updateLarkDocument(documentToken, { command: "block_replace", content, blockId: block_id }, connectionId);
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
