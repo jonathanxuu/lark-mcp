@@ -567,7 +567,9 @@ async function searchLarkDocuments(query = "", pageToken = "", pageSize = 20, co
     next_page_token: data.page_token ?? null,
     total: data.total ?? null,
     identity: "bot_application",
-    note: body.query ? "结果来自 Bot 可访问的云文档搜索索引" : "空关键词浏览 Bot 可访问的云文档搜索索引；结果可能需要继续翻页",
+    note: body.query
+      ? "结果来自 Bot 可访问的云文档搜索索引；单独分享给 Bot 的个人空间文档可能不会出现在索引中"
+      : "空关键词浏览 Bot 可访问的云文档搜索索引；结果可能需要继续翻页，且不保证覆盖所有单独分享的个人空间文档",
   };
 }
 
@@ -682,7 +684,7 @@ function createServer() {
     "read_lark_wiki",
     {
       title: "Read a Lark wiki page",
-      description: "Read the markdown content of a Lark knowledge-base page. This tool is read-only.",
+      description: "Read the markdown content of a Lark knowledge-base page. This tool is read-only. If a page is not shown by search, the user can paste its Lark Wiki URL here to verify whether the Bot has permission to read it.",
       inputSchema: { wiki_url_or_token: z.string().min(1), connection_id: z.string().min(1).optional() },
     },
     async ({ wiki_url_or_token, connection_id }) => {
@@ -698,7 +700,7 @@ function createServer() {
     "read_lark_document",
     {
       title: "Read a Lark cloud document",
-      description: "Read the markdown content of a Lark docx document. This tool is read-only.",
+      description: "Read the markdown content of a Lark docx document. This tool is read-only. Search results may omit individually shared documents; if the user pastes a Lark document URL, use it directly to verify whether the Bot can read it.",
       inputSchema: { document_url_or_token: z.string().min(1), connection_id: z.string().min(1).optional() },
     },
     async ({ document_url_or_token, connection_id }) => {
@@ -927,7 +929,7 @@ function createServer() {
     {
       title: "Search Lark documents visible to the Bot",
       description:
-        "Search Lark cloud documents, Wiki pages, and other indexed cloud resources using the Bot/application identity. The query may be empty to browse accessible resources. Use this for documents shared directly with the Bot, including documents in another user's personal space. This tool is read-only and paginated.",
+        "Search indexed Lark cloud documents, Wiki pages, and other cloud resources using the Bot/application identity. The query may be empty to browse indexed resources. Results may be incomplete and may omit documents individually shared from another user's personal space. Always tell the user that missing documents can be checked by pasting the Lark document or Wiki URL, then use read_lark_document or read_lark_wiki directly. This tool is read-only and paginated.",
       inputSchema: {
         query: z.string().max(30).optional(),
         page_token: z.string().optional(),
