@@ -525,6 +525,52 @@ async function searchDriveFileNames(query, folderToken = "", pageSize = 200, con
   };
 }
 
+function stripHighlightTags(value = "") {
+  return value.replace(/<\/?h>/g, "");
+}
+
+function tokenFromLarkUrl(value = "") {
+  const match = value.match(/\/(?:docx|docs|wiki|sheets|base)\/([^/?#]+)/);
+  return match?.[1] ?? null;
+}
+
+async function searchLarkDocuments(query = "", pageToken = "", pageSize = 20, connectionId = "") {
+  const body = {
+    query: query.slice(0, 30),
+    page_size: Math.min(Math.max(pageSize, 1), 20),
+    doc_filter: {},
+    wiki_filter: {},
+  };
+  if (pageToken) body.page_token = pageToken;
+
+  const response = await larkRequest("/open-apis/search/v2/doc_wiki/search", "POST", body, connectionId);
+  const data = response.data ?? response;
+  const results = (data.res_units ?? []).map((item) => {
+    const metadata = item.result_meta ?? {};
+    const sourceUrl = metadata.url ?? item.url ?? null;
+    return {
+      title: stripHighlightTags(item.title_highlighted ?? item.title ?? ""),
+      document_type: metadata.doc_types ?? item.entity_type ?? null,
+      document_token: metadata.token ?? item.token ?? (sourceUrl ? tokenFromLarkUrl(sourceUrl) : null),
+      source_url: sourceUrl,
+      updated_at: metadata.update_time_iso ?? metadata.update_time ?? null,
+      summary: stripHighlightTags(item.summary_highlighted ?? item.summary ?? ""),
+      raw: item,
+    };
+  });
+
+  return {
+    query: body.query,
+    results,
+    count: results.length,
+    has_more: Boolean(data.has_more),
+    next_page_token: data.page_token ?? null,
+    total: data.total ?? null,
+    identity: "bot_application",
+    note: body.query ? "结果来自 Bot 可访问的云文档搜索索引" : "空关键词浏览 Bot 可访问的云文档搜索索引；结果可能需要继续翻页",
+  };
+}
+
 async function grantDocumentEditAccess(documentToken, connectionId = "") {
   const connection = getConnection(connectionId);
   const openId = connection.user?.open_id;
@@ -869,6 +915,28 @@ function createServer() {
     },
     async ({ query, folder_token, page_size, connection_id }) => {
       const result = await searchDriveFileNames(query, folder_token, page_size, resolveConnectionId(connection_id));
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "search_lark_documents",
+    {
+      title: "Search Lark documents visible to the Bot",
+      description:
+        "Search Lark cloud documents, Wiki pages, and other indexed cloud resources using the Bot/application identity. The query may be empty to browse accessible resources. Use this for documents shared directly with the Bot, including documents in another user's personal space. This tool is read-only and paginated.",
+      inputSchema: {
+        query: z.string().max(30).optional(),
+        page_token: z.string().optional(),
+        page_size: z.number().int().min(1).max(20).optional(),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ query, page_token, page_size, connection_id }) => {
+      const result = await searchLarkDocuments(query ?? "", page_token, page_size, resolveConnectionId(connection_id));
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,

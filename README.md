@@ -50,6 +50,7 @@ Available tools:
 - `read_lark_file`: extract text from PDF, Word, Excel, CSV, Markdown, or text files.
 - `search_lark_wiki`: search knowledge-base page titles.
 - `search_lark_drive_files`: search file names in the Drive root or a specified folder.
+- `search_lark_documents`: search Bot/application-visible cloud documents and Wiki pages through Search V2; supports empty-query browsing and pagination.
 - `save_draft_to_lark`: after `confirmed=true`, create a new Lark document, write a draft into it, and attempt to read it back for verification. It never edits or deletes the source document.
 - `append_to_lark_document`: after `confirmed=true`, append content to an existing Lark document without replacing or deleting existing content.
 - `edit_lark_document`: after `confirmed=true`, either replace all direct content blocks (`mode=replace_all`) or replace the text of one paragraph block (`mode=replace_block`, requires `block_id`).
