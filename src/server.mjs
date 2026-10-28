@@ -396,6 +396,7 @@ async function listAllDriveFiles(folderToken = "", maxFiles = 2000, connectionId
           source_url: `https://${new URL(baseUrl).hostname}/drive/file/${file.token}`,
           folder_token: current.token || null,
           folder_path: current.path,
+          summary: metadataSummary(file),
         };
         const isFolder = file.type === "folder" || file.file_type === "folder";
         if (isFolder) {
@@ -495,6 +496,20 @@ async function readLarkFile(fileToken, fileName = "", mimeType = "", metadata = 
   };
 }
 
+function summarizeText(value = "", maxLength = 320) {
+  const text = String(value)
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#>*_`~\[\]()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return "";
+  return text.length > maxLength ? `${text.slice(0, maxLength).trimEnd()}…` : text;
+}
+
+function metadataSummary(item = {}) {
+  return summarizeText(item.summary ?? item.description ?? item.excerpt ?? item.name ?? "");
+}
+
 async function searchWikiTitles(query, maxResults = 20, maxNodes = 500, connectionId = "") {
   const spaces = await listWikiSpaces("", 50, connectionId);
   const results = [];
@@ -573,18 +588,30 @@ async function searchLarkDocuments(query = "", pageToken = "", pageSize = 20, co
   };
 }
 
-async function inventoryLarkDocuments({ mode = "metadata", query = "", maxItems = 20, maxFiles = 100, connectionId = "" }) {
+async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems = 20, maxFiles = 100, connectionId = "" }) {
   const search = await searchLarkDocuments(query, "", Math.min(maxItems, 20), connectionId);
   const wikiSpaces = await listWikiSpaces("", 50, connectionId);
   const drive = await listAllDriveFiles("", Math.min(maxFiles, 200), connectionId);
+  const searchResults = search.results.map((item) => ({
+    ...item,
+    summary: metadataSummary(item),
+  }));
+  const driveFiles = drive.files.map((file) => ({
+    ...file,
+    summary: metadataSummary(file),
+  }));
   const result = {
     mode,
     identity: "bot_application",
-    search_results: search.results,
+    include_summary: true,
+    search_results: searchResults,
     search_has_more: search.has_more,
     search_next_page_token: search.next_page_token,
-    wiki_spaces: wikiSpaces.items ?? [],
-    drive_files: drive.files,
+    wiki_spaces: (wikiSpaces.items ?? []).map((space) => ({
+      ...space,
+      summary: metadataSummary(space),
+    })),
+    drive_files: driveFiles,
     drive_truncated: drive.truncated,
     scanned_folders: drive.scanned_folders,
     note: "这是一次只读聚合检索。搜索索引和 Drive 列表可能遗漏个人空间中单独分享的文档；如用户提供 URL，应直接调用读取工具验证权限。",
@@ -592,7 +619,7 @@ async function inventoryLarkDocuments({ mode = "metadata", query = "", maxItems 
 
   if (mode === "metadata") return result;
 
-  const candidates = search.results
+  const candidates = searchResults
     .filter((item) => item.source_url && (item.source_url.includes("/wiki/") || item.source_url.includes("/docx/") || item.source_url.includes("/docs/")))
     .slice(0, Math.min(maxItems, 10));
   const contents = [];
@@ -605,6 +632,7 @@ async function inventoryLarkDocuments({ mode = "metadata", query = "", maxItems 
         title: document.title ?? item.title,
         source_url: document.source_url ?? item.source_url,
         document_token: document.document_token,
+        summary: summarizeText(document.content),
         content: mode === "preview" ? document.content.slice(0, 1000) : document.content,
         truncated: mode === "preview" || document.content.length > 100000,
       });
@@ -612,8 +640,53 @@ async function inventoryLarkDocuments({ mode = "metadata", query = "", maxItems 
       contents.push({ title: item.title, source_url: item.source_url, error: error.message });
     }
   }
+  if (mode === "preview" || mode === "content") {
+    const fileLimit = Math.min(driveFiles.length, Math.min(maxItems, 10));
+    for (const file of driveFiles.slice(0, fileLimit)) {
+      if (!file.token || file.type === "folder" || file.file_type === "folder") continue;
+      try {
+        const document = await readLarkFile(file.token, file.name, file.mime_type ?? file.mimeType ?? "", file, connectionId);
+        file.summary = summarizeText(document.content);
+        if (mode === "content") file.content = document.content;
+      } catch (error) {
+        file.summary_error = error.message;
+      }
+    }
+  }
   result.contents = contents;
   return result;
+}
+
+function driveTokenFromInput(input) {
+  if (input.startsWith("http://") || input.startsWith("https://")) {
+    const match = new URL(input).pathname.match(/\/drive\/file\/([^/]+)/);
+    if (!match) throw new Error("The URL is not a supported Lark Drive file URL");
+    return match[1];
+  }
+  return input;
+}
+
+async function readLarkResource(input, mode = "preview", connectionId = "") {
+  const value = input.trim();
+  let document;
+  if (value.includes("/wiki/")) {
+    document = await readWikiDocument(value, connectionId);
+  } else if (value.includes("/docx/") || value.includes("/docs/")) {
+    document = await readLarkDocument(value, connectionId);
+  } else {
+    const token = driveTokenFromInput(value);
+    document = await readLarkFile(token, "", "", { source_url: value }, connectionId);
+  }
+
+  return {
+    title: document.title ?? document.file_name ?? null,
+    source_url: document.source_url ?? value,
+    document_token: document.document_token ?? document.file_token ?? null,
+    document_type: document.document_type ?? document.format ?? null,
+    summary: summarizeText(document.content),
+    content: mode === "content" ? document.content : document.content.slice(0, 1000),
+    truncated: mode !== "content" && document.content.length > 1000,
+  };
 }
 
 async function grantDocumentEditAccess(documentToken, connectionId = "") {
@@ -723,6 +796,12 @@ async function createLarkDocument({ title, content, folderToken = "", sourceUrls
 function createServer() {
   const server = new McpServer({ name: "counso-lark", version: "0.2.0" });
 
+  // Keep the implementation available for compatibility while exposing one
+  // consolidated read tool to MCP clients. This prevents the model from
+  // selecting several overlapping list/search/read tools and causing a
+  // separate confirmation for each call.
+  const exposeLegacyReadTools = false;
+  if (exposeLegacyReadTools) {
   server.registerTool(
     "read_lark_wiki",
     {
@@ -814,7 +893,7 @@ function createServer() {
     "list_lark_wiki_spaces",
     {
       title: "List Lark knowledge bases",
-      description: "List knowledge bases visible to the configured Lark application. This tool is read-only.",
+      description: "List knowledge bases visible to the configured Lark application. For a broad document inventory, use inventory_lark_documents instead so COUNSO only needs one authorization. This tool is read-only and intended for targeted follow-up pagination.",
       inputSchema: {
         page_token: z.string().optional(),
         page_size: z.number().int().min(1).max(50).optional(),
@@ -834,7 +913,7 @@ function createServer() {
     "list_lark_wiki_nodes",
     {
       title: "List Lark knowledge-base pages",
-      description: "List pages under a Lark knowledge base or parent page. Use has_child to continue traversing. This tool is read-only.",
+      description: "List pages under a Lark knowledge base or parent page. Use has_child to continue traversing. For a broad document inventory, use inventory_lark_documents instead so COUNSO only needs one authorization. This tool is read-only and intended for targeted follow-up traversal.",
       inputSchema: {
         space_id: z.string().min(1),
         parent_node_token: z.string().optional(),
@@ -845,6 +924,7 @@ function createServer() {
     },
     async ({ space_id, parent_node_token, page_token, page_size, connection_id }) => {
       const result = await listWikiNodes(space_id, parent_node_token, page_token, page_size, resolveConnectionId(connection_id));
+      result.items = (result.items ?? []).map((item) => ({ ...item, summary: metadataSummary(item) }));
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
@@ -856,7 +936,7 @@ function createServer() {
     "list_lark_drive_files",
     {
       title: "List Lark Drive files",
-      description: "List files directly under a Lark Drive folder. This tool is read-only.",
+      description: "List files directly under a Lark Drive folder. For a broad document inventory, use inventory_lark_documents instead so COUNSO only needs one authorization. This tool is read-only and intended for targeted folder pagination.",
       inputSchema: {
         folder_token: z.string().optional(),
         page_token: z.string().optional(),
@@ -877,7 +957,7 @@ function createServer() {
     "list_all_lark_files",
     {
       title: "List all accessible Lark Drive files",
-      description: "Recursively scan the Lark Drive root or a specified folder and return file metadata and source URLs. This tool is read-only and bounded.",
+      description: "Recursively scan the Lark Drive root or a specified folder and return file metadata and source URLs. For a broad document inventory, use inventory_lark_documents instead so COUNSO only needs one authorization. This tool is read-only and bounded.",
       inputSchema: {
         folder_token: z.string().optional(),
         max_files: z.number().int().min(1).max(10000).optional(),
@@ -994,9 +1074,9 @@ function createServer() {
     {
       title: "Inventory Lark documents in one read-only operation",
       description:
-        "Perform one read-only aggregate inventory using the Bot/application identity. Combines indexed document search, Wiki spaces, and Drive metadata to reduce repeated permission prompts. mode=metadata returns listings only; mode=preview reads short previews; mode=content reads a bounded number of full document contents. Results may still omit individually shared personal-space documents; if the user provides a URL, verify it directly with the read tools.",
+        "Perform one read-only aggregate inventory using the Bot/application identity. Use this tool for broad document-list requests instead of calling the individual list/search tools. It combines indexed document search, Wiki spaces, and Drive metadata in one MCP call and includes a summary field by default. mode=metadata returns metadata summaries; mode=preview additionally reads short content summaries; mode=content reads a bounded number of full document contents. Results may still omit individually shared personal-space documents; if the user provides a URL, verify it directly with the read tools.",
       inputSchema: {
-        mode: z.enum(["metadata", "preview", "content"]).optional(),
+        mode: z.enum(["metadata", "preview", "content"]).optional().default("preview"),
         query: z.string().max(30).optional(),
         max_items: z.number().int().min(1).max(20).optional(),
         max_files: z.number().int().min(1).max(200).optional(),
@@ -1005,7 +1085,7 @@ function createServer() {
     },
     async ({ mode, query, max_items, max_files, connection_id }) => {
       const result = await inventoryLarkDocuments({
-        mode: mode ?? "metadata",
+        mode: mode ?? "preview",
         query: query ?? "",
         maxItems: max_items ?? 20,
         maxFiles: max_files ?? 100,
@@ -1014,6 +1094,64 @@ function createServer() {
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
+      };
+    },
+  );
+  }
+
+  server.registerTool(
+    "lark_documents",
+    {
+      title: "Browse or read Lark documents",
+      description:
+        "The single read-only entry point for Lark documents. Use action=inventory to find accessible documents and return summaries in one operation, or action=read with one or more Lark URLs/tokens to read them in one operation. This tool is intentionally consolidated so the client normally asks for Allow only once. Results may omit documents that are not in the Bot's search index; paste a direct Lark URL in action=read to verify access. Never use this tool to create or modify documents.",
+      inputSchema: {
+        action: z.enum(["inventory", "read"]).optional().default("inventory"),
+        mode: z.enum(["preview", "content", "metadata"]).optional().default("preview"),
+        query: z.string().max(30).optional(),
+        urls: z.array(z.string().min(1)).max(20).optional(),
+        max_items: z.number().int().min(1).max(20).optional(),
+        max_files: z.number().int().min(1).max(200).optional(),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ action, mode, query, urls, max_items, max_files, connection_id }) => {
+      const connectionId = resolveConnectionId(connection_id);
+      const selectedAction = action ?? "inventory";
+      const selectedMode = mode ?? "preview";
+
+      if (selectedAction === "read") {
+        if (!urls?.length) {
+          return {
+            isError: true,
+            content: [{ type: "text", text: "action=read requires at least one Lark document, Wiki, or Drive URL/token in urls." }],
+          };
+        }
+        const documents = [];
+        for (const url of urls) {
+          try {
+            documents.push(await readLarkResource(url, selectedMode === "metadata" ? "preview" : selectedMode, connectionId));
+          } catch (error) {
+            documents.push({ source_url: url, error: error.message });
+          }
+        }
+        const result = { action: "read", mode: selectedMode, count: documents.length, documents };
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      }
+
+      const result = await inventoryLarkDocuments({
+        mode: selectedMode,
+        query: query ?? "",
+        maxItems: max_items ?? 20,
+        maxFiles: max_files ?? 100,
+        connectionId,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify({ action: "inventory", ...result }, null, 2) }],
+        structuredContent: { action: "inventory", ...result },
       };
     },
   );
