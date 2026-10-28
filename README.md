@@ -51,6 +51,7 @@ Available tools:
 - `search_lark_wiki`: search knowledge-base page titles.
 - `search_lark_drive_files`: search file names in the Drive root or a specified folder.
 - `search_lark_documents`: search indexed Bot/application-visible cloud documents and Wiki pages through Search V2; supports empty-query browsing and pagination. It is not guaranteed to enumerate every document individually shared from another user's personal space; a direct URL/token remains authoritative.
+- `inventory_lark_documents`: one read-only aggregate inventory of Search V2, Wiki spaces, and Drive metadata, with `metadata`, `preview`, and bounded `content` modes to reduce repeated permission prompts.
 
 Search results may be incomplete, especially for documents individually shared from another user's personal space. The Bot must tell users that a missing document can still be checked by pasting its Lark document or Wiki URL; `read_lark_document` and `read_lark_wiki` then verify direct read permission.
 - `save_draft_to_lark`: after `confirmed=true`, create a new Lark document, write a draft into it, and attempt to read it back for verification. It never edits or deletes the source document.

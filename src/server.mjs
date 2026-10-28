@@ -573,6 +573,49 @@ async function searchLarkDocuments(query = "", pageToken = "", pageSize = 20, co
   };
 }
 
+async function inventoryLarkDocuments({ mode = "metadata", query = "", maxItems = 20, maxFiles = 100, connectionId = "" }) {
+  const search = await searchLarkDocuments(query, "", Math.min(maxItems, 20), connectionId);
+  const wikiSpaces = await listWikiSpaces("", 50, connectionId);
+  const drive = await listAllDriveFiles("", Math.min(maxFiles, 200), connectionId);
+  const result = {
+    mode,
+    identity: "bot_application",
+    search_results: search.results,
+    search_has_more: search.has_more,
+    search_next_page_token: search.next_page_token,
+    wiki_spaces: wikiSpaces.items ?? [],
+    drive_files: drive.files,
+    drive_truncated: drive.truncated,
+    scanned_folders: drive.scanned_folders,
+    note: "这是一次只读聚合检索。搜索索引和 Drive 列表可能遗漏个人空间中单独分享的文档；如用户提供 URL，应直接调用读取工具验证权限。",
+  };
+
+  if (mode === "metadata") return result;
+
+  const candidates = search.results
+    .filter((item) => item.source_url && (item.source_url.includes("/wiki/") || item.source_url.includes("/docx/") || item.source_url.includes("/docs/")))
+    .slice(0, Math.min(maxItems, 10));
+  const contents = [];
+  for (const item of candidates) {
+    try {
+      const document = item.source_url.includes("/wiki/")
+        ? await readWikiDocument(item.source_url, connectionId)
+        : await readLarkDocument(item.source_url, connectionId);
+      contents.push({
+        title: document.title ?? item.title,
+        source_url: document.source_url ?? item.source_url,
+        document_token: document.document_token,
+        content: mode === "preview" ? document.content.slice(0, 1000) : document.content,
+        truncated: mode === "preview" || document.content.length > 100000,
+      });
+    } catch (error) {
+      contents.push({ title: item.title, source_url: item.source_url, error: error.message });
+    }
+  }
+  result.contents = contents;
+  return result;
+}
+
 async function grantDocumentEditAccess(documentToken, connectionId = "") {
   const connection = getConnection(connectionId);
   const openId = connection.user?.open_id;
@@ -939,6 +982,35 @@ function createServer() {
     },
     async ({ query, page_token, page_size, connection_id }) => {
       const result = await searchLarkDocuments(query ?? "", page_token, page_size, resolveConnectionId(connection_id));
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    },
+  );
+
+  server.registerTool(
+    "inventory_lark_documents",
+    {
+      title: "Inventory Lark documents in one read-only operation",
+      description:
+        "Perform one read-only aggregate inventory using the Bot/application identity. Combines indexed document search, Wiki spaces, and Drive metadata to reduce repeated permission prompts. mode=metadata returns listings only; mode=preview reads short previews; mode=content reads a bounded number of full document contents. Results may still omit individually shared personal-space documents; if the user provides a URL, verify it directly with the read tools.",
+      inputSchema: {
+        mode: z.enum(["metadata", "preview", "content"]).optional(),
+        query: z.string().max(30).optional(),
+        max_items: z.number().int().min(1).max(20).optional(),
+        max_files: z.number().int().min(1).max(200).optional(),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ mode, query, max_items, max_files, connection_id }) => {
+      const result = await inventoryLarkDocuments({
+        mode: mode ?? "metadata",
+        query: query ?? "",
+        maxItems: max_items ?? 20,
+        maxFiles: max_files ?? 100,
+        connectionId: resolveConnectionId(connection_id),
+      });
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
