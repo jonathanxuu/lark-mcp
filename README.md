@@ -19,6 +19,12 @@ Start a member connection at `/oauth/lark/start?user_id=<COUNSO_USER_ID>`. The c
 
 For production, use an HTTPS redirect URL and move the connection store from memory to a persistent encrypted store. Restarting this local process clears active OAuth connections.
 
+## Default output folder
+
+New documents created by `save_draft_to_lark` default to the `Counso Lark Bot` folder. If `LARK_OUTPUT_FOLDER_TOKEN` is set, that token is used; otherwise the service finds or creates a Bot-owned folder with that exact name. Share that folder in Lark with the intended readers (or make it tenant-visible). Access to the Bot alone does not automatically grant access to the folder.
+
+Before creating a document, the client must ask the user where to store it: `default_public_folder`, `user_drive`, or `user_folder`. The latter accepts either an exact root-folder name or a `folder_token`.
+
 ## Production domain configuration
 
 When deploying behind an HTTPS reverse proxy, set the public URL in the server environment:
@@ -39,13 +45,13 @@ The exact `LARK_OAUTH_REDIRECT_URI` must also be added to the Lark application's
 
 Available tools:
 
-- `lark_documents`: the only exposed read tool. Use `action=inventory` to list accessible documents with summaries, or `action=read` with one or more Lark URLs/tokens to read them in one operation. `preview` is the default; `content` returns bounded full content; `metadata` avoids content reads.
+- `lark_documents`: the only exposed read tool. Use `action=inventory` to return separate `bot_documents` and `wiki_documents` lists, with summaries and per-document `permission.can_read`, `permission.can_edit`, and `permission.permission_text`; or use `action=read` with one or more Lark URLs/tokens to read and check them in one operation. `preview` is the default; `content` returns bounded full content; `metadata` avoids content reads.
 
 Search results may be incomplete, especially for documents individually shared from another user's personal space. The Bot must tell users that a missing document can still be checked by passing its Lark document or Wiki URL to `lark_documents` with `action=read`.
 - `save_draft_to_lark`: after `confirmed=true`, create a new Lark document, write a draft into it, and attempt to read it back for verification. It never edits or deletes the source document.
 - `append_to_lark_document`: after `confirmed=true`, append content to an existing Lark document without replacing or deleting existing content.
 - `edit_lark_document`: after `confirmed=true`, either replace all direct content blocks (`mode=replace_all`) or replace the text of one paragraph block (`mode=replace_block`, requires `block_id`).
 
-When `save_draft_to_lark` creates a document, the service also grants the current OAuth user `edit` permission on that document. The app must have the document permission scope required by the Lark permissions API (the example configuration includes `drive:drive`). If granting permission fails, the document is still created and the tool response reports the failure explicitly.
+When `save_draft_to_lark` creates a document, the service also grants the current OAuth user `edit` permission on that document. The app must have the document permission scope required by the Lark permissions API (the example configuration includes `drive:drive`). If granting permission fails, the document is still created and the tool response reports the failure explicitly. The response also reports the output folder and whether the default shared-folder configuration was used.
 
 The write tools are intentionally narrow: they require `confirmed=true`. `replace_all` is destructive to the document's direct content blocks, so use it only after displaying the replacement draft and confirming it. The server does not call write tools automatically during startup or read tests. Recursive scans and file counts are bounded to avoid accidentally loading an unbounded Drive. There is no application-identity fallback: missing or invalid `connection_id` blocks the operation.

@@ -15,6 +15,8 @@ const port = Number(process.env.PORT ?? 8787);
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`).replace(/\/+$/, "");
 const oauthRedirectUri = process.env.LARK_OAUTH_REDIRECT_URI ?? `${publicBaseUrl}/oauth/lark/callback`;
 const oauthScopes = process.env.LARK_OAUTH_SCOPES ?? "docs:document.content:read docx:document:create drive:drive";
+const defaultOutputFolderToken = process.env.LARK_OUTPUT_FOLDER_TOKEN ?? "";
+const defaultOutputFolderName = "Counso Lark Bot";
 const mcpIssuer = process.env.MCP_OAUTH_ISSUER ?? publicBaseUrl;
 const mcpResource = process.env.MCP_RESOURCE ?? `${mcpIssuer}/mcp`;
 
@@ -199,16 +201,19 @@ async function refreshUserAccessToken(connection) {
   return connection.accessToken;
 }
 
-async function getAccessToken(connectionId = "") {
+async function getAccessToken(connectionId = "", identity = "bot") {
   if (!connectionId) throw new Error("Lark OAuth connection_id is required; connect Lark before using this tool");
   const connection = userConnections.get(connectionId);
   if (!connection) throw new Error("Lark member OAuth connection not found; connect Lark before using this tool");
 
-  // The member OAuth connection gates access to this MCP connection, while
-  // Lark document APIs use the enterprise application's identity, as required
-  // by the product workflow. The user's access token is used only to verify
-  // the member during OAuth and is never used as a file-access fallback.
+  if (identity === "user") return refreshUserAccessTokenIfNeeded(connection);
   return getTenantAccessToken();
+}
+
+async function refreshUserAccessTokenIfNeeded(connection) {
+  if (connection.accessToken && Date.now() < connection.expiresAt) return connection.accessToken;
+  if (!connection.refreshToken) throw new Error("Lark user OAuth refresh token is missing");
+  return refreshUserAccessToken(connection);
 }
 
 function getConnection(connectionId = "") {
@@ -247,16 +252,16 @@ function escapeXmlText(value) {
   })[character]);
 }
 
-async function larkGet(path, connectionId = "") {
-  const token = await getAccessToken(connectionId);
+async function larkGet(path, connectionId = "", identity = "bot") {
+  const token = await getAccessToken(connectionId, identity);
   const response = await fetch(`${baseUrl}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return parseJson(response);
 }
 
-async function larkRequest(path, method, body, connectionId = "") {
-  const token = await getAccessToken(connectionId);
+async function larkRequest(path, method, body, connectionId = "", identity = "bot") {
+  const token = await getAccessToken(connectionId, identity);
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -268,8 +273,8 @@ async function larkRequest(path, method, body, connectionId = "") {
   return parseJson(response);
 }
 
-async function larkGetBuffer(path, connectionId = "") {
-  const token = await getAccessToken(connectionId);
+async function larkGetBuffer(path, connectionId = "", identity = "bot") {
+  const token = await getAccessToken(connectionId, identity);
   const response = await fetch(`${baseUrl}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -344,7 +349,61 @@ async function listWikiNodes(spaceId, parentNodeToken = "", pageToken = "", page
   return body.data;
 }
 
-async function readLarkDocument(input, connectionId = "") {
+async function listAllWikiDocuments(spaces, maxNodes = 200, connectionId = "") {
+  const queue = (spaces.items ?? []).map((space) => ({
+    space,
+    parentNodeToken: "",
+    parentPath: [],
+  }));
+  const visited = new Set();
+  const documents = [];
+
+  while (queue.length && documents.length < maxNodes) {
+    const current = queue.shift();
+    let pageToken = "";
+    do {
+      const page = await listWikiNodes(current.space.space_id, current.parentNodeToken, pageToken, 50, connectionId);
+      for (const node of page.items ?? []) {
+        if (documents.length >= maxNodes) break;
+        const nodeKey = `${current.space.space_id}:${node.node_token}`;
+        if (visited.has(nodeKey)) continue;
+        visited.add(nodeKey);
+        const item = {
+          ...node,
+          title: node.title ?? node.obj_title ?? node.node_token,
+          document_token: node.obj_token ?? null,
+          document_type: node.obj_type ?? null,
+          source_url: `https://${new URL(baseUrl).hostname}/wiki/${node.node_token}`,
+          document_origin: "wiki_node",
+          belongs_to_wiki: true,
+          wiki_space_id: current.space.space_id,
+          wiki_space_name: current.space.name ?? current.space.title ?? current.space.space_id,
+          parent_node_token: current.parentNodeToken || null,
+          parent_path: current.parentPath,
+          summary: metadataSummary(node),
+        };
+        documents.push(item);
+        if (node.has_child) {
+          queue.push({
+            space: current.space,
+            parentNodeToken: node.node_token,
+            parentPath: [...current.parentPath, item.title],
+          });
+        }
+      }
+      pageToken = page.has_more ? page.next_page_token ?? "" : "";
+    } while (pageToken && documents.length < maxNodes);
+  }
+
+  return {
+    documents,
+    count: documents.length,
+    truncated: documents.length >= maxNodes || queue.length > 0,
+    scanned_nodes: visited.size,
+  };
+}
+
+async function readLarkDocument(input, connectionId = "", identity = "bot") {
   const token = docTokenFromInput(input);
   const query = new URLSearchParams({
     doc_token: token,
@@ -352,7 +411,7 @@ async function readLarkDocument(input, connectionId = "") {
     content_type: "markdown",
     lang: "en",
   });
-  const body = await larkGet(`/open-apis/docs/v1/content?${query}`, connectionId);
+  const body = await larkGet(`/open-apis/docs/v1/content?${query}`, connectionId, identity);
   return {
     document_token: token,
     document_type: "docx",
@@ -364,7 +423,7 @@ async function readLarkDocument(input, connectionId = "") {
   };
 }
 
-async function listDriveFiles(folderToken = "", pageToken = "", pageSize = 50, connectionId = "") {
+async function listDriveFiles(folderToken = "", pageToken = "", pageSize = 50, connectionId = "", identity = "bot") {
   const query = new URLSearchParams({
     page_size: String(Math.min(Math.max(pageSize, 1), 200)),
     order_by: "EditedTime",
@@ -372,8 +431,39 @@ async function listDriveFiles(folderToken = "", pageToken = "", pageSize = 50, c
   });
   if (folderToken) query.set("folder_token", folderToken);
   if (pageToken) query.set("page_token", pageToken);
-  const body = await larkGet(`/open-apis/drive/v1/files?${query}`, connectionId);
+  const body = await larkGet(`/open-apis/drive/v1/files?${query}`, connectionId, identity);
   return body.data;
+}
+
+async function ensureDefaultOutputFolder(connectionId = "") {
+  if (defaultOutputFolderToken) return defaultOutputFolderToken;
+  const root = await listDriveFiles("", "", 200, connectionId, "bot");
+  const existing = (root.files ?? []).find((file) =>
+    file.name === defaultOutputFolderName && (file.type === "folder" || file.file_type === "folder"),
+  );
+  if (existing?.token) return existing.token;
+  const created = await larkRequest(
+    "/open-apis/drive/v1/files/create_folder",
+    "POST",
+    { name: defaultOutputFolderName, folder_token: "" },
+    connectionId,
+    "bot",
+  );
+  const data = created.data ?? created;
+  if (!data.token) throw new Error(`Unable to create default folder ${defaultOutputFolderName}`);
+  return data.token;
+}
+
+async function resolveUserFolderToken(folderToken = "", folderName = "", connectionId = "") {
+  if (folderToken) return folderToken;
+  if (!folderName) throw new Error("storage_target=user_folder requires folder_token or folder_name");
+  const root = await listDriveFiles("", "", 200, connectionId, "user");
+  const matches = (root.files ?? []).filter((file) =>
+    file.name === folderName && (file.type === "folder" || file.file_type === "folder"),
+  );
+  if (matches.length === 1) return matches[0].token;
+  if (matches.length > 1) throw new Error(`当前用户网盘中存在多个名为“${folderName}”的文件夹，请提供 folder_token`);
+  throw new Error(`当前用户网盘根目录中找不到文件夹“${folderName}”`);
 }
 
 async function listAllDriveFiles(folderToken = "", maxFiles = 2000, connectionId = "") {
@@ -510,6 +600,81 @@ function metadataSummary(item = {}) {
   return summarizeText(item.summary ?? item.description ?? item.excerpt ?? item.name ?? "");
 }
 
+function permissionTypeForDocument(item = {}) {
+  const sourceUrl = item.source_url ?? item.url ?? "";
+  if (sourceUrl.includes("/wiki/")) return "docx";
+  const rawType = item.document_type ?? item.file_type ?? item.type ?? item.format ?? "docx";
+  const type = Array.isArray(rawType) ? rawType[0] : rawType;
+  if (["doc", "docx", "sheet", "file", "bitable"].includes(type)) return type;
+  return "docx";
+}
+
+function permissionAllowed(body) {
+  const data = body?.data ?? body;
+  if (typeof data === "boolean") return data;
+  return Boolean(data?.permitted ?? data?.is_permitted ?? data?.allowed);
+}
+
+async function checkLarkDocumentPermission(documentToken, documentType, connectionId = "") {
+  if (!documentToken) {
+    return {
+      can_read: null,
+      can_edit: null,
+      permission_status: "unknown",
+      permission_text: "无法确认 Bot 权限：缺少文档 token",
+    };
+  }
+
+  const result = {
+    can_read: null,
+    can_edit: null,
+    permission_status: "unknown",
+    permission_text: "无法确认 Bot 权限",
+    permission_type: documentType,
+  };
+  try {
+    const [viewBody, editBody] = await Promise.all([
+      larkRequest("/open-apis/drive/permission/member/permitted", "POST", {
+        token: documentToken,
+        type: documentType,
+        perm: "view",
+      }, connectionId),
+      larkRequest("/open-apis/drive/permission/member/permitted", "POST", {
+        token: documentToken,
+        type: documentType,
+        perm: "edit",
+      }, connectionId),
+    ]);
+    result.can_read = permissionAllowed(viewBody);
+    result.can_edit = permissionAllowed(editBody);
+    result.permission_status = result.can_edit ? "read_write" : result.can_read ? "read_only" : "no_access";
+    result.permission_text = result.can_edit
+      ? "Bot 有权限阅读和编辑"
+      : result.can_read
+        ? "Bot 有权限阅读，但没有编辑权限"
+        : "Bot 没有阅读权限，也没有编辑权限";
+  } catch (error) {
+    result.permission_error = error.message;
+  }
+  return result;
+}
+
+async function enrichDocumentPermissions(items, connectionId = "", maxChecks = 20) {
+  const cache = new Map();
+  let checked = 0;
+  return Promise.all(items.map(async (item) => {
+    const token = item.document_token ?? item.token ?? item.file_token;
+    if (!token || checked >= maxChecks) return item;
+    const type = permissionTypeForDocument(item);
+    const cacheKey = `${type}:${token}`;
+    if (!cache.has(cacheKey)) {
+      checked += 1;
+      cache.set(cacheKey, checkLarkDocumentPermission(token, type, connectionId));
+    }
+    return { ...item, permission: await cache.get(cacheKey) };
+  }));
+}
+
 async function searchWikiTitles(query, maxResults = 20, maxNodes = 500, connectionId = "") {
   const spaces = await listWikiSpaces("", 50, connectionId);
   const results = [];
@@ -588,18 +753,50 @@ async function searchLarkDocuments(query = "", pageToken = "", pageSize = 20, co
   };
 }
 
-async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems = 20, maxFiles = 100, connectionId = "" }) {
+async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems = 20, maxFiles = 100, maxWikiNodes = 200, connectionId = "" }) {
   const search = await searchLarkDocuments(query, "", Math.min(maxItems, 20), connectionId);
   const wikiSpaces = await listWikiSpaces("", 50, connectionId);
   const drive = await listAllDriveFiles("", Math.min(maxFiles, 200), connectionId);
-  const searchResults = search.results.map((item) => ({
+  const wikiInventory = await listAllWikiDocuments(wikiSpaces, Math.min(maxWikiNodes, 500), connectionId);
+  let wikiDocuments = wikiInventory.documents;
+  let searchResults = search.results.map((item) => ({
     ...item,
     summary: metadataSummary(item),
+    document_origin: item.source_url?.includes("/wiki/") ? "wiki_search_index" : "bot_search_index",
+    belongs_to_wiki: item.source_url?.includes("/wiki/") ?? false,
   }));
-  const driveFiles = drive.files.map((file) => ({
+  let driveFiles = drive.files.map((file) => ({
     ...file,
     summary: metadataSummary(file),
+    document_origin: "bot_drive",
+    belongs_to_wiki: false,
   }));
+  searchResults = await enrichDocumentPermissions(searchResults, connectionId, Math.min(maxItems, 20));
+  driveFiles = await enrichDocumentPermissions(driveFiles, connectionId, Math.min(maxItems, 20));
+  wikiDocuments = await enrichDocumentPermissions(wikiDocuments, connectionId, Math.min(maxWikiNodes, 100));
+
+  if (mode !== "metadata") {
+    let readCount = 0;
+    for (const item of wikiDocuments) {
+      if (item.document_type !== "docx" || !item.document_token || readCount >= Math.min(maxItems, 20)) continue;
+      try {
+        const document = await readWikiDocument(item.source_url, connectionId);
+        item.summary = summarizeText(document.content);
+        if (mode === "content") item.content = document.content;
+      } catch (error) {
+        item.summary_error = error.message;
+      }
+      readCount += 1;
+    }
+  }
+
+  const wikiTokens = new Set(wikiDocuments.map((item) => item.document_token).filter(Boolean));
+  const botDocuments = [...searchResults, ...driveFiles]
+    .filter((item) => !item.document_token || !wikiTokens.has(item.document_token));
+  const permissionItems = [...searchResults, ...driveFiles]
+    .map((item) => item.permission)
+    .concat(wikiDocuments.map((item) => item.permission))
+    .filter(Boolean);
   const result = {
     mode,
     identity: "bot_application",
@@ -607,6 +804,8 @@ async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems =
     search_results: searchResults,
     search_has_more: search.has_more,
     search_next_page_token: search.next_page_token,
+    bot_documents: botDocuments,
+    wiki_documents: wikiDocuments,
     wiki_spaces: (wikiSpaces.items ?? []).map((space) => ({
       ...space,
       summary: metadataSummary(space),
@@ -614,6 +813,14 @@ async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems =
     drive_files: driveFiles,
     drive_truncated: drive.truncated,
     scanned_folders: drive.scanned_folders,
+    wiki_truncated: wikiInventory.truncated,
+    permission_summary: {
+      checked: permissionItems.length,
+      readable: permissionItems.filter((item) => item.can_read === true).length,
+      editable: permissionItems.filter((item) => item.can_edit === true).length,
+      read_only: permissionItems.filter((item) => item.permission_status === "read_only").length,
+      unknown: permissionItems.filter((item) => item.permission_status === "unknown").length,
+    },
     note: "这是一次只读聚合检索。搜索索引和 Drive 列表可能遗漏个人空间中单独分享的文档；如用户提供 URL，应直接调用读取工具验证权限。",
   };
 
@@ -678,11 +885,17 @@ async function readLarkResource(input, mode = "preview", connectionId = "") {
     document = await readLarkFile(token, "", "", { source_url: value }, connectionId);
   }
 
+  const permission = await checkLarkDocumentPermission(
+    document.document_token ?? document.file_token,
+    permissionTypeForDocument(document),
+    connectionId,
+  );
   return {
     title: document.title ?? document.file_name ?? null,
     source_url: document.source_url ?? value,
     document_token: document.document_token ?? document.file_token ?? null,
     document_type: document.document_type ?? document.format ?? null,
+    permission,
     summary: summarizeText(document.content),
     content: mode === "content" ? document.content : document.content.slice(0, 1000),
     truncated: mode !== "content" && document.content.length > 1000,
@@ -739,20 +952,29 @@ async function updateLarkDocument(documentToken, { command, content, blockId = "
   };
 }
 
-async function createLarkDocument({ title, content, folderToken = "", sourceUrls = [], connectionId = "" }) {
+async function createLarkDocument({ title, content, folderToken = "", folderName = "", storageTarget = "default_public_folder", sourceUrls = [], connectionId = "" }) {
+  const identity = storageTarget === "user_drive" || storageTarget === "user_folder" ? "user" : "bot";
+  const effectiveFolderToken = storageTarget === "default_public_folder"
+    ? await ensureDefaultOutputFolder(connectionId)
+    : storageTarget === "user_folder"
+      ? await resolveUserFolderToken(folderToken, folderName, connectionId)
+      : "";
+  if (storageTarget === "user_folder" && !effectiveFolderToken) {
+    throw new Error("storage_target=user_folder requires folder_token");
+  }
   const sourceSection = sourceUrls.length > 0 ? `\n\n## 来源\n\n${sourceUrls.map((url) => `- ${url}`).join("\n")}` : "";
   const created = await larkRequest("/open-apis/docs_ai/v1/documents", "POST", {
     format: "markdown",
     content: `<title>${escapeXmlText(title)}</title>\n\n${content}${sourceSection}`,
     extra_param: JSON.stringify({ open_create_async: true }),
-    ...(folderToken ? { parent_token: folderToken } : {}),
-  }, connectionId);
+    ...(effectiveFolderToken ? { parent_token: effectiveFolderToken } : {}),
+  }, connectionId, identity);
 
   let data = created.data ?? created;
   if (!data.document?.document_id && data.task_id) {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      const task = await larkGet(`/open-apis/docs_ai/v1/async_tasks/${encodeURIComponent(data.task_id)}`, connectionId);
+      const task = await larkGet(`/open-apis/docs_ai/v1/async_tasks/${encodeURIComponent(data.task_id)}`, connectionId, identity);
       data = task.data ?? task;
       if (data.document?.document_id || data.status === "failed" || data.status === "error") break;
     }
@@ -767,21 +989,38 @@ async function createLarkDocument({ title, content, folderToken = "", sourceUrls
     document_id: document.document_id,
     title: document.title ?? title,
     url: document.url ?? `https://${new URL(baseUrl).hostname}/docx/${document.document_id}`,
-    folder_token: folderToken || null,
+    folder_token: effectiveFolderToken || null,
+    folder_url: effectiveFolderToken
+      ? `https://${new URL(baseUrl).hostname}/drive/folder/${effectiveFolderToken}`
+      : null,
+    storage_scope: effectiveFolderToken
+      ? storageTarget === "default_public_folder" ? "configured_public_folder" : storageTarget
+      : "user_drive_root",
+    storage_note: storageTarget === "default_public_folder"
+      ? "文档已放入 Counso Lark Bot 文件夹；文件夹的 Lark 共享设置决定哪些用户可以看到。"
+      : storageTarget === "user_folder"
+        ? "文档已放入当前 OAuth 用户指定的网盘文件夹。"
+        : "文档已放入当前 OAuth 用户的网盘根目录。",
+    storage_identity: identity,
   };
 
-  try {
-    await grantDocumentEditAccess(document.document_id, connectionId);
+  if (identity === "user") {
     result.permission_granted = true;
-    result.permission = "当前 OAuth 用户已获得编辑权限";
-  } catch (error) {
-    result.permission_granted = false;
-    result.permission = "文档已创建，但当前 OAuth 用户编辑权限授予失败";
-    result.permission_error = error.message;
+    result.permission = "文档由当前 OAuth 用户创建，当前用户具有编辑权限";
+  } else {
+    try {
+      await grantDocumentEditAccess(document.document_id, connectionId);
+      result.permission_granted = true;
+      result.permission = "当前 OAuth 用户已获得编辑权限";
+    } catch (error) {
+      result.permission_granted = false;
+      result.permission = "文档已创建，但当前 OAuth 用户编辑权限授予失败";
+      result.permission_error = error.message;
+    }
   }
 
   try {
-    const verification = await readLarkDocument(document.document_id, connectionId);
+    const verification = await readLarkDocument(document.document_id, connectionId, identity);
     result.verified = verification.content.includes(content);
     result.verification = result.verified ? "已重新读取并核对正文" : "文档已创建，但重新读取的正文与草稿不完全匹配";
   } catch (error) {
@@ -1104,7 +1343,7 @@ function createServer() {
     {
       title: "Browse or read Lark documents",
       description:
-        "The single read-only entry point for Lark documents. Use action=inventory to find accessible documents and return summaries in one operation, or action=read with one or more Lark URLs/tokens to read them in one operation. This tool is intentionally consolidated so the client normally asks for Allow only once. Results may omit documents that are not in the Bot's search index; paste a direct Lark URL in action=read to verify access. Never use this tool to create or modify documents.",
+        "The single read-only entry point for Lark documents. Use action=inventory to return Bot-accessible documents and the documents actually contained in each Wiki space, with separate bot_documents and wiki_documents arrays, summaries, and per-document can_read/can_edit permission results. Use action=read with one or more Lark URLs/tokens to read and check them in one operation. This tool is intentionally consolidated so the client normally asks for Allow only once. Results may omit documents that are not in the Bot's search index; paste a direct Lark URL in action=read to verify access. Never use this tool to create or modify documents.",
       inputSchema: {
         action: z.enum(["inventory", "read"]).optional().default("inventory"),
         mode: z.enum(["preview", "content", "metadata"]).optional().default("preview"),
@@ -1112,10 +1351,11 @@ function createServer() {
         urls: z.array(z.string().min(1)).max(20).optional(),
         max_items: z.number().int().min(1).max(20).optional(),
         max_files: z.number().int().min(1).max(200).optional(),
+        max_wiki_nodes: z.number().int().min(1).max(500).optional(),
         connection_id: z.string().min(1).optional(),
       },
     },
-    async ({ action, mode, query, urls, max_items, max_files, connection_id }) => {
+    async ({ action, mode, query, urls, max_items, max_files, max_wiki_nodes, connection_id }) => {
       const connectionId = resolveConnectionId(connection_id);
       const selectedAction = action ?? "inventory";
       const selectedMode = mode ?? "preview";
@@ -1147,6 +1387,7 @@ function createServer() {
         query: query ?? "",
         maxItems: max_items ?? 20,
         maxFiles: max_files ?? 100,
+        maxWikiNodes: max_wiki_nodes ?? 200,
         connectionId,
       });
       return {
@@ -1161,17 +1402,19 @@ function createServer() {
     {
       title: "Save a draft as a new Lark document",
       description:
-        "Use only when the user explicitly asks to create a NEW Lark document. After confirmation, create a new document and write the supplied draft into it. Never use this tool to modify an existing document.",
+        "Use only when the user explicitly asks to create a NEW Lark document. Before calling, ask where to store it and require storage_target: default_public_folder (the Counso Lark Bot shared folder), user_drive (the current OAuth user's Drive root), or user_folder (the current OAuth user's specified folder, using folder_token or an exact folder_name). Tell the user the default is the Counso Lark Bot folder. After confirmation, create the document in that location. Never use this tool to modify an existing document.",
       inputSchema: {
         confirmed: z.boolean(),
         title: z.string().min(1).max(200),
         content: z.string().min(1).max(100000),
+        storage_target: z.enum(["default_public_folder", "user_drive", "user_folder"]),
         folder_token: z.string().optional(),
+        folder_name: z.string().min(1).max(200).optional(),
         source_urls: z.array(z.string().url()).max(20).optional(),
         connection_id: z.string().min(1).optional(),
       },
     },
-    async ({ confirmed, title, content, folder_token, source_urls, connection_id }) => {
+    async ({ confirmed, title, content, storage_target, folder_token, folder_name, source_urls, connection_id }) => {
       if (!confirmed) {
         return {
           isError: true,
@@ -1181,7 +1424,9 @@ function createServer() {
       const result = await createLarkDocument({
         title,
         content,
+        storageTarget: storage_target,
         folderToken: folder_token,
+        folderName: folder_name,
         sourceUrls: source_urls ?? [],
         connectionId: resolveConnectionId(connection_id),
       });
