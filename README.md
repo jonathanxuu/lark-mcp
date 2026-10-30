@@ -17,6 +17,10 @@ For the PDF's per-member connection model, configure the Lark app's OAuth redire
 
 Start a member connection at `/oauth/lark/start?user_id=<COUNSO_USER_ID>`. The callback returns a `connection_id`; COUNSO must attach that ID to every Lark tool call. The service keeps the user token server-side and never returns it to the client.
 
+The service supports a server-managed multi-Bot registry through `LARK_BOTS_JSON`. Each entry contains an `id`, display `name`, Lark `app_id`, and `app_secret`; secrets remain server-side. After OAuth, call `lark_list_bots` and then `lark_select_bot` so the user can choose an available Bot. A Bot from another OAuth application requires a new authorization, which can be started with `/oauth/lark/start?bot_id=<BOT_ID>`.
+
+If `LARK_BOTS_JSON` is not set, the existing `LARK_APP_ID` and `LARK_APP_SECRET` configuration is used as the single default Bot. Users do not need to register App ID or Secret themselves in the recommended deployment model.
+
 For production, use an HTTPS redirect URL and move the connection store from memory to a persistent encrypted store. Restarting this local process clears active OAuth connections.
 
 ## Default output folder

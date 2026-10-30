@@ -20,12 +20,52 @@ const defaultOutputFolderName = "Counso Lark Bot";
 const mcpIssuer = process.env.MCP_OAUTH_ISSUER ?? publicBaseUrl;
 const mcpResource = process.env.MCP_RESOURCE ?? `${mcpIssuer}/mcp`;
 
-if (!process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) {
-  throw new Error("LARK_APP_ID and LARK_APP_SECRET are required");
+function loadBotRegistry() {
+  const configured = process.env.LARK_BOTS_JSON?.trim();
+  if (!configured) {
+    if (!process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) {
+      throw new Error("LARK_APP_ID and LARK_APP_SECRET are required when LARK_BOTS_JSON is not configured");
+    }
+    return [{
+      id: "default",
+      name: "COUNSO Lark 助手",
+      appId: process.env.LARK_APP_ID,
+      appSecret: process.env.LARK_APP_SECRET,
+      outputFolderToken: defaultOutputFolderToken,
+      description: "默认 Lark 应用",
+    }];
+  }
+
+  let bots;
+  try {
+    bots = JSON.parse(configured);
+  } catch (error) {
+    throw new Error(`LARK_BOTS_JSON is not valid JSON: ${error.message}`);
+  }
+  if (!Array.isArray(bots) || bots.length === 0) {
+    throw new Error("LARK_BOTS_JSON must be a non-empty array");
+  }
+  const normalized = bots.map((bot, index) => ({
+    id: String(bot.id ?? `bot-${index + 1}`),
+    name: String(bot.name ?? bot.id ?? `Lark Bot ${index + 1}`),
+    appId: bot.app_id ?? bot.appId,
+    appSecret: bot.app_secret ?? bot.appSecret,
+    outputFolderToken: bot.output_folder_token ?? bot.outputFolderToken ?? defaultOutputFolderToken,
+    description: bot.description ?? "",
+  }));
+  if (normalized.some((bot) => !bot.appId || !bot.appSecret)) {
+    throw new Error("Every LARK_BOTS_JSON entry requires app_id and app_secret");
+  }
+  if (new Set(normalized.map((bot) => bot.id)).size !== normalized.length) {
+    throw new Error("LARK_BOTS_JSON bot ids must be unique");
+  }
+  return normalized;
 }
 
-let tokenCache = { value: null, expiresAt: 0 };
-let appAccessTokenCache = { value: null, expiresAt: 0 };
+const botRegistry = loadBotRegistry();
+const botById = new Map(botRegistry.map((bot) => [bot.id, bot]));
+const appAccessTokenCache = new Map();
+const tenantAccessTokenCache = new Map();
 const oauthStates = new Map();
 const userConnections = new Map();
 const mcpClients = new Map();
@@ -46,6 +86,25 @@ function resolveConnectionId(connectionId) {
   // authenticated MCP bearer token. Do not allow tool arguments to select a
   // different member connection.
   return mcpConnectionContext.getStore() || connectionId || "";
+}
+
+function publicBot(bot) {
+  return {
+    id: bot.id,
+    name: bot.name,
+    description: bot.description,
+  };
+}
+
+function getBot(botId = "") {
+  const bot = botById.get(botId || botRegistry[0].id);
+  if (!bot) throw new Error(`Lark Bot not found: ${botId}`);
+  return bot;
+}
+
+function getConnectionBot(connectionId = "") {
+  const connection = getConnection(connectionId);
+  return getBot(connection.selectedBotId || connection.oauthBotId);
 }
 
 function json(res, status, body, headers = {}) {
@@ -123,48 +182,59 @@ async function fetchLark(url, options, operation) {
   throw new Error(`Lark network request failed during ${operation}: ${cause}`);
 }
 
-async function getTenantAccessToken() {
-  if (tokenCache.value && Date.now() < tokenCache.expiresAt) return tokenCache.value;
+async function getTenantAccessToken(connectionId = "") {
+  const connection = getConnection(connectionId);
+  const bot = getConnectionBot(connectionId);
+  const tenantKey = connection.tenantKey ?? connection.user?.tenant_key ?? connection.user?.tenantKey ?? "";
+  const cacheKey = `${bot.id}:${tenantKey || "default"}`;
+  const cached = tenantAccessTokenCache.get(cacheKey);
+  if (cached?.value && Date.now() < cached.expiresAt) return cached.value;
 
-  const response = await fetchLark(`${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
+  const appAccessToken = await getAppAccessToken(bot);
+  const endpoint = tenantKey
+    ? `${baseUrl}/open-apis/auth/v3/tenant_access_token`
+    : `${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`;
+  const requestBody = tenantKey
+    ? { app_access_token: appAccessToken, tenant_key: tenantKey }
+    : { app_id: bot.appId, app_secret: bot.appSecret };
+  const response = await fetchLark(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      app_id: process.env.LARK_APP_ID,
-      app_secret: process.env.LARK_APP_SECRET,
-    }),
+    body: JSON.stringify(requestBody),
   });
   const body = await parseJson(response);
-  tokenCache = {
-    value: body.tenant_access_token,
+  const token = body.tenant_access_token;
+  tenantAccessTokenCache.set(cacheKey, {
+    value: token,
     expiresAt: Date.now() + Math.max(60, body.expire - 300) * 1000,
-  };
-  return tokenCache.value;
+  });
+  return token;
 }
 
-async function getAppAccessToken() {
-  if (appAccessTokenCache.value && Date.now() < appAccessTokenCache.expiresAt) {
-    return appAccessTokenCache.value;
+async function getAppAccessToken(bot = botRegistry[0]) {
+  const cached = appAccessTokenCache.get(bot.id);
+  if (cached?.value && Date.now() < cached.expiresAt) {
+    return cached.value;
   }
 
   const response = await fetchLark(`${baseUrl}/open-apis/auth/v3/app_access_token/internal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      app_id: process.env.LARK_APP_ID,
-      app_secret: process.env.LARK_APP_SECRET,
+      app_id: bot.appId,
+      app_secret: bot.appSecret,
     }),
   });
   const body = await parseJson(response);
-  appAccessTokenCache = {
+  appAccessTokenCache.set(bot.id, {
     value: body.app_access_token,
     expiresAt: Date.now() + Math.max(60, body.expire - 300) * 1000,
-  };
-  return appAccessTokenCache.value;
+  });
+  return body.app_access_token;
 }
 
-async function exchangeAuthorizationCode(code) {
-  const appAccessToken = await getAppAccessToken();
+async function exchangeAuthorizationCode(code, bot = botRegistry[0]) {
+  const appAccessToken = await getAppAccessToken(bot);
   const response = await fetchLark(`${baseUrl}/open-apis/authen/v1/oidc/access_token`, {
     method: "POST",
     headers: {
@@ -180,7 +250,7 @@ async function exchangeAuthorizationCode(code) {
 }
 
 async function refreshUserAccessToken(connection) {
-  const appAccessToken = await getAppAccessToken();
+  const appAccessToken = await getAppAccessToken(getBot(connection.oauthBotId));
   const response = await fetchLark(`${baseUrl}/open-apis/authen/v1/oidc/refresh_access_token`, {
     method: "POST",
     headers: {
@@ -207,7 +277,7 @@ async function getAccessToken(connectionId = "", identity = "bot") {
   if (!connection) throw new Error("Lark member OAuth connection not found; connect Lark before using this tool");
 
   if (identity === "user") return refreshUserAccessTokenIfNeeded(connection);
-  return getTenantAccessToken();
+  return getTenantAccessToken(connectionId);
 }
 
 async function refreshUserAccessTokenIfNeeded(connection) {
@@ -231,9 +301,10 @@ async function getLarkUserInfo(accessToken) {
   return body.data ?? body;
 }
 
-function createLarkOAuthUrl({ state, userId = "" }) {
+function createLarkOAuthUrl({ state, userId = "", botId = "" }) {
+  const bot = getBot(botId);
   const query = new URLSearchParams({
-    app_id: process.env.LARK_APP_ID,
+    app_id: bot.appId,
     redirect_uri: oauthRedirectUri,
     state,
     scope: oauthScopes,
@@ -436,7 +507,8 @@ async function listDriveFiles(folderToken = "", pageToken = "", pageSize = 50, c
 }
 
 async function ensureDefaultOutputFolder(connectionId = "") {
-  if (defaultOutputFolderToken) return defaultOutputFolderToken;
+  const bot = getConnectionBot(connectionId);
+  if (bot.outputFolderToken) return bot.outputFolderToken;
   const root = await listDriveFiles("", "", 200, connectionId, "bot");
   const existing = (root.files ?? []).find((file) =>
     file.name === defaultOutputFolderName && (file.type === "folder" || file.file_type === "folder"),
@@ -1035,6 +1107,63 @@ async function createLarkDocument({ title, content, folderToken = "", folderName
 function createServer() {
   const server = new McpServer({ name: "counso-lark", version: "0.2.0" });
 
+  server.registerTool(
+    "lark_list_bots",
+    {
+      title: "List available Lark Bots",
+      description: "List the Lark Bots configured by the service. Secrets are never returned. Use this after OAuth so the user can choose which configured Bot should be used for subsequent Lark operations.",
+      inputSchema: { connection_id: z.string().min(1).optional() },
+    },
+    async ({ connection_id }) => {
+      const resolvedConnectionId = resolveConnectionId(connection_id);
+      const connection = getConnection(resolvedConnectionId);
+      const authorizedBot = getBot(connection.oauthBotId);
+      const bots = botRegistry
+        .filter((bot) => bot.appId === authorizedBot.appId)
+        .map(publicBot);
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          selected_bot_id: connection.selectedBotId ?? connection.oauthBotId,
+          bots,
+          note: "只能选择使用同一个 OAuth 应用完成授权的 Bot；切换到其他 OAuth 应用需要重新授权。",
+        }, null, 2) }],
+        structuredContent: {
+          selected_bot_id: connection.selectedBotId ?? connection.oauthBotId,
+          bots,
+        },
+      };
+    },
+  );
+
+  server.registerTool(
+    "lark_select_bot",
+    {
+      title: "Select a Lark Bot",
+      description: "Select one configured Lark Bot for the current OAuth connection. The selection is stored on the connection and applies to later read and write tools. The selected Bot must belong to the same OAuth application; selecting another application's Bot requires a new OAuth authorization.",
+      inputSchema: {
+        bot_id: z.string().min(1),
+        connection_id: z.string().min(1).optional(),
+      },
+    },
+    async ({ bot_id, connection_id }) => {
+      const resolvedConnectionId = resolveConnectionId(connection_id);
+      const connection = getConnection(resolvedConnectionId);
+      const bot = getBot(bot_id);
+      const authorizedBot = getBot(connection.oauthBotId);
+      if (bot.appId !== authorizedBot.appId) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "该 Bot 属于另一个 OAuth 应用，请使用 bot_id 重新发起 OAuth 授权后再选择。" }],
+        };
+      }
+      connection.selectedBotId = bot.id;
+      return {
+        content: [{ type: "text", text: JSON.stringify({ selected_bot: publicBot(bot), message: `已选择 Lark Bot：${bot.name}` }, null, 2) }],
+        structuredContent: { selected_bot: publicBot(bot) },
+      };
+    },
+  );
+
   // Keep the implementation available for compatibility while exposing one
   // consolidated read tool to MCP clients. This prevents the model from
   // selecting several overlapping list/search/read tools and causing a
@@ -1562,10 +1691,18 @@ const httpServer = http.createServer(async (req, res) => {
       json(res, 400, { error: "invalid_request", error_description: "Valid OAuth client and PKCE parameters are required" });
       return;
     }
+    let oauthBot;
+    try {
+      oauthBot = getBot(requestUrl.searchParams.get("bot_id") ?? "");
+    } catch (error) {
+      json(res, 400, { error: "invalid_request", error_description: error.message });
+      return;
+    }
     const state = crypto.randomBytes(24).toString("hex");
     oauthStates.set(state, {
       userId: "",
       createdAt: Date.now(),
+      botId: oauthBot.id,
       mcp: {
         clientId,
         redirectUri,
@@ -1573,7 +1710,7 @@ const httpServer = http.createServer(async (req, res) => {
         state: requestUrl.searchParams.get("state") ?? "",
       },
     });
-    redirect(res, createLarkOAuthUrl({ state }));
+    redirect(res, createLarkOAuthUrl({ state, botId: oauthBot.id }));
     return;
   }
 
@@ -1623,13 +1760,22 @@ const httpServer = http.createServer(async (req, res) => {
   }
 
   if (requestUrl.pathname === "/oauth/lark/start") {
+    let botId;
+    try {
+      botId = getBot(requestUrl.searchParams.get("bot_id") ?? "").id;
+    } catch (error) {
+      json(res, 400, { error: "invalid_bot", error_description: error.message });
+      return;
+    }
     const state = crypto.randomBytes(24).toString("hex");
     oauthStates.set(state, {
       userId: requestUrl.searchParams.get("user_id") ?? "",
+      botId,
       createdAt: Date.now(),
     });
     const location = createLarkOAuthUrl({
       state,
+      botId,
       userId: requestUrl.searchParams.get("user_id") ?? "",
     });
     res.writeHead(302, { Location: location });
@@ -1652,7 +1798,8 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const tokenBody = await exchangeAuthorizationCode(requestUrl.searchParams.get("code") ?? "");
+      const oauthBot = getBot(pending.botId ?? "");
+      const tokenBody = await exchangeAuthorizationCode(requestUrl.searchParams.get("code") ?? "", oauthBot);
       const token = tokenBody.data ?? tokenBody;
       const connectionId = crypto.randomUUID();
       const user = await getLarkUserInfo(token.access_token);
@@ -1663,6 +1810,9 @@ const httpServer = http.createServer(async (req, res) => {
         refreshExpiresAt: Date.now() + Math.max(60, (token.refresh_expires_in ?? 2592000) - 300) * 1000,
         userId: pending.userId,
         user,
+        tenantKey: token.tenant_key ?? tokenBody.tenant_key ?? user.tenant_key ?? user.tenantKey ?? "",
+        oauthBotId: oauthBot.id,
+        selectedBotId: oauthBot.id,
       });
       if (pending.mcp) {
         const code = randomToken();
@@ -1682,8 +1832,9 @@ const httpServer = http.createServer(async (req, res) => {
           ok: true,
           connection_id: connectionId,
           user: { name: user.name, open_id: user.open_id, user_id: user.user_id },
+        selected_bot: publicBot(oauthBot),
           expires_in: token.expires_in,
-          message: "Lark 已连接。请将 connection_id 交给 COUNSO 的连接管理层，后续工具调用使用该 connection_id。",
+        message: "Lark 已连接。后续可先列出并选择可用 Bot，再使用文档工具。",
         });
       }
     } catch (error) {
@@ -1700,6 +1851,10 @@ const httpServer = http.createServer(async (req, res) => {
       ok: Boolean(connection),
       connected: Boolean(connection),
       user: connection ? { name: connection.user?.name, open_id: connection.user?.open_id, user_id: connection.user?.user_id } : null,
+      selected_bot: connection ? publicBot(getConnectionBot(requestUrl.searchParams.get("connection_id") ?? "")) : null,
+      available_bots: connection
+        ? botRegistry.filter((bot) => bot.appId === getBot(connection.oauthBotId).appId).map(publicBot)
+        : [],
       expires_at: connection ? new Date(connection.expiresAt).toISOString() : null,
     }));
     return;
