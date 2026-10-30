@@ -49,7 +49,7 @@ Available tools:
 
 Search results may be incomplete, especially for documents individually shared from another user's personal space. The Bot must tell users that a missing document can still be checked by passing its Lark document or Wiki URL to `lark_documents` with `action=read`.
 - `save_draft_to_lark`: after `confirmed=true`, create a new Lark document, write a draft into it, and attempt to read it back for verification. It never edits or deletes the source document.
-- `append_to_lark_document`: after `confirmed=true`, append content to an existing Lark document without replacing or deleting existing content.
+- `append_to_lark_document`: after `confirmed=true`, append content to an existing Lark document without replacing or deleting existing content. It uses the Lark Docs API's `block_insert_after` command with `block_id=-1` (the document end); `append` is only a CLI shorthand and is not accepted by the API endpoint.
 - `edit_lark_document`: after `confirmed=true`, either replace all direct content blocks (`mode=replace_all`) or replace the text of one paragraph block (`mode=replace_block`, requires `block_id`).
 
 When `save_draft_to_lark` creates a document, the service also grants the current OAuth user `edit` permission on that document. The app must have the document permission scope required by the Lark permissions API (the example configuration includes `drive:drive`). If granting permission fails, the document is still created and the tool response reports the failure explicitly. The response also reports the output folder and whether the default shared-folder configuration was used.

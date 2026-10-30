@@ -917,7 +917,14 @@ async function grantDocumentEditAccess(documentToken, connectionId = "") {
 }
 
 async function appendToLarkDocument(documentToken, content, connectionId = "") {
-  const result = await updateLarkDocument(documentToken, { command: "append", content }, connectionId);
+  // The docs_ai API does not accept the CLI's `append` shorthand.  The
+  // equivalent API operation is block_insert_after with the -1 sentinel,
+  // which means "insert at the end of the document".
+  const result = await updateLarkDocument(
+    documentToken,
+    { command: "block_insert_after", blockId: "-1", content },
+    connectionId,
+  );
   return { ...result, appended_content: content };
 }
 
@@ -945,7 +952,12 @@ async function updateLarkDocument(documentToken, { command, content, blockId = "
   );
   return {
     document_id: documentToken,
-    mode: command === "overwrite" ? "replace_all" : "replace_block",
+    mode: command === "overwrite"
+      ? "replace_all"
+      : command === "block_insert_after"
+        ? "append"
+        : "replace_block",
+    command,
     block_id: blockId || null,
     result: body.data ?? body,
     source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
