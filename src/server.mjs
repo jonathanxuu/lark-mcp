@@ -304,14 +304,13 @@ async function getTenantAccessToken(connectionId = "") {
   const cached = tenantAccessTokenCache.get(cacheKey);
   if (cached?.value && Date.now() < cached.expiresAt) return cached.value;
 
-  const appAccessToken = await getAppAccessToken(bot);
-  const endpoint = tenantKey
-    ? `${baseUrl}/open-apis/auth/v3/tenant_access_token`
-    : `${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`;
+  // Each registered Bot is a tenant's own custom App. Custom Apps obtain
+  // their tenant_access_token directly with app_id/app_secret. The
+  // non-internal endpoint is for ISV/store Apps and expects an ISV app
+  // access token, which causes error 10013 for these standalone Apps.
+  const endpoint = `${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`;
   console.error(`[Lark] requesting tenant_access_token bot=${bot.id} tenant_key=${tenantKey || "(empty)"} endpoint=${endpoint}`);
-  const requestBody = tenantKey
-    ? { app_access_token: appAccessToken, tenant_key: tenantKey }
-    : { app_id: bot.appId, app_secret: bot.appSecret };
+  const requestBody = { app_id: bot.appId, app_secret: bot.appSecret };
   const response = await fetchLark(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
