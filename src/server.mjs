@@ -426,28 +426,64 @@ function htmlEscape(value) {
 }
 
 function renderOrganizationSelectionPage(selectionToken, organizations) {
-  const rows = organizations.map((organization) =>
-    `<li><strong>${htmlEscape(organization.name)}</strong> `
-      + `<button name="organization_id" value="${htmlEscape(organization.id)}">选择组织</button></li>`
-  ).join("\n");
-  return `<!doctype html><meta charset="utf-8"><title>选择 Lark 组织</title>
-    <style>body{font:16px system-ui;max-width:760px;margin:48px auto;padding:0 20px}li{margin:16px 0}button{margin-left:12px;padding:6px 10px}</style>
-    <h1>选择用于 Lark OAuth 身份验证的组织</h1>
-    <p>请选择你要进行 Lark OAuth 身份验证的组织。验证完成后，你还可以选择该组织内要使用的 Bot。你不需要输入 App ID 或 App Secret。</p>
-    <form method="post" action="/oauth/lark/select-organization"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><ul>${rows || "<li>管理员还没有配置可用组织。</li>"}</ul></form>`;
+  const rows = organizations.map((organization) => `
+    <button class="choice-card" type="submit" name="organization_id" value="${htmlEscape(organization.id)}" data-search="${htmlEscape(organization.name)}">
+      <span class="choice-icon">${buildingIcon()}</span>
+      <span class="choice-copy"><strong>${htmlEscape(organization.name)}</strong><small>使用该组织进行 Lark OAuth 身份验证</small></span>
+      <span class="choice-arrow">${arrowIcon()}</span>
+    </button>`).join("\n");
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择 Lark 组织</title>
+    <style>${oauthPageStyles()}</style></head><body><main class="panel">
+      <div class="brand"><span class="brand-mark">${sparkIcon()}</span><span>COUNSO <em>LARK MCP</em></span></div>
+      <div class="eyebrow">SECURE CONNECTION</div><h1>选择用于 Lark OAuth 身份验证的组织</h1>
+      <p class="subtitle">选择组织后，我们将验证你的 Lark 身份，并让你选择要使用的 Bot。</p>
+      <label class="search"><span>${searchIcon()}</span><input id="search" type="search" placeholder="搜索组织名称" autocomplete="off"></label>
+      <form id="organization-form" method="post" action="/oauth/lark/select-organization"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><div id="choices" class="choices">${rows || '<div class="empty">管理员还没有配置可用组织。</div>'}</div></form>
+      <div id="empty-search" class="empty hidden">没有找到匹配的组织</div><footer>Protected by COUNSO Lark MCP</footer>
+    </main><script>const input=document.querySelector('#search');const cards=[...document.querySelectorAll('.choice-card')];const empty=document.querySelector('#empty-search');input?.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();let visible=0;cards.forEach(c=>{const show=!q||c.dataset.search.toLowerCase().includes(q);c.classList.toggle('hidden',!show);if(show)visible++});empty.classList.toggle('hidden',visible!==0||cards.length===0)});</script></body></html>`;
 }
 
 function renderBotSelectionPage(selectionToken, organization, bots, authorizedBotId = "") {
   const rows = bots.map((bot) => {
     const sameAuthorization = bot.id === authorizedBotId;
-    return `<li><strong>${htmlEscape(bot.name)}</strong> `
-      + `<button name="bot_id" value="${htmlEscape(bot.id)}">${sameAuthorization ? "使用并完成连接" : "授权并添加到 MCP"}</button></li>`;
+    return `<button class="choice-card" type="submit" name="bot_id" value="${htmlEscape(bot.id)}">
+      <span class="choice-icon bot-icon">${botIcon()}</span>
+      <span class="choice-copy"><strong>${htmlEscape(bot.name)}</strong><small>${sameAuthorization ? "已完成身份验证，可直接连接" : "授权此 Bot 并添加到 MCP"}</small></span>
+      <span class="choice-arrow">${arrowIcon()}</span>
+    </button>`;
   }).join("\n");
-  return `<!doctype html><meta charset="utf-8"><title>选择 Lark Bot</title>
-    <style>body{font:16px system-ui;max-width:760px;margin:48px auto;padding:0 20px}li{margin:16px 0}button{margin-left:12px;padding:6px 10px}</style>
-    <h1>选择要添加到 MCP 的 Lark Bot</h1>
-    <p>组织：${htmlEscape(organization.name)}</p>
-    <form method="post" action="/oauth/lark/select"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><ul>${rows || "<li>该组织还没有配置 Bot。</li>"}</ul></form>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择 Lark Bot</title>
+    <style>${oauthPageStyles()}</style></head><body><main class="panel">
+      <div class="brand"><span class="brand-mark">${sparkIcon()}</span><span>COUNSO <em>LARK MCP</em></span></div>
+      <div class="eyebrow">ORGANIZATION VERIFIED</div><h1>选择要添加到 MCP 的 Lark Bot</h1>
+      <p class="subtitle"><span class="org-pill">${buildingIcon()} ${htmlEscape(organization.name)}</span> 选择一个 Bot 继续。</p>
+      <form method="post" action="/oauth/lark/select"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><div class="choices">${rows || '<div class="empty">该组织还没有配置 Bot。</div>'}</div></form>
+      <footer>Protected by COUNSO Lark MCP</footer>
+    </main></body></html>`;
+}
+
+function sparkIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l1.7 7.3L21 11l-7.3 1.7L12 20l-1.7-7.3L3 11l7.3-1.7L12 2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+}
+
+function buildingIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-3 8 3v16M8 8h1m3 0h1m3 0h1M8 12h1m3 0h1m3 0h1M8 16h1m3 0h1m3 0h1M10 21v-3h4v3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+
+function botIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="13" rx="4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v3M8 12h.01M16 12h.01M9 16h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>';
+}
+
+function searchIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 16l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+}
+
+function arrowIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+
+function oauthPageStyles() {
+  return `:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f5f9ff;color:#10233f;font:15px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background-image:linear-gradient(rgba(40,112,214,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(40,112,214,.045) 1px,transparent 1px);background-size:32px 32px;display:flex;align-items:center;justify-content:center;padding:28px}.panel{width:min(100%,650px);background:rgba(255,255,255,.94);border:1px solid #dce9f8;border-radius:24px;padding:34px 36px 24px;box-shadow:0 24px 70px rgba(28,82,145,.14)}.brand{display:flex;align-items:center;gap:10px;color:#1264c7;font-size:13px;font-weight:800;letter-spacing:.12em}.brand em{color:#8aa2bf;font-style:normal;font-size:10px;letter-spacing:.1em;margin-left:4px}.brand-mark{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#1677e8,#49b7ff);box-shadow:0 7px 18px rgba(24,117,224,.25)}svg{width:20px;height:20px}.brand-mark svg{width:17px}.eyebrow{margin-top:48px;color:#4e91da;font-size:11px;font-weight:800;letter-spacing:.18em}h1{margin:8px 0 10px;font-size:29px;line-height:1.2;letter-spacing:-.03em;color:#102b50}.subtitle{margin:0 0 24px;color:#6d819b}.search{height:48px;display:flex;align-items:center;gap:10px;padding:0 15px;border:1px solid #d6e5f6;border-radius:13px;background:#f8fbff;color:#7aa3cf;transition:.2s}.search:focus-within{border-color:#50a4ef;box-shadow:0 0 0 4px rgba(54,145,232,.1);background:#fff}.search svg{width:19px}.search input{width:100%;border:0;outline:0;background:transparent;color:#193554;font-size:15px}.search input::placeholder{color:#9aafc7}.choices{display:grid;gap:10px;margin-top:16px}.choice-card{width:100%;display:flex;align-items:center;gap:14px;padding:15px 16px;border:1px solid #dfebf8;border-radius:15px;background:#fff;color:#183454;text-align:left;cursor:pointer;transition:transform .18s,box-shadow .18s,border-color .18s}.choice-card:hover{transform:translateY(-2px);border-color:#80b9ed;box-shadow:0 10px 24px rgba(42,112,184,.12)}.choice-icon{flex:0 0 42px;width:42px;height:42px;display:grid;place-items:center;border-radius:12px;color:#1976d2;background:#eaf4ff}.bot-icon{color:#725ce6;background:#f0edff}.choice-copy{min-width:0;display:flex;flex-direction:column;gap:2px}.choice-copy strong{font-size:15px;color:#183454}.choice-copy small{color:#8295ab;font-size:12px}.choice-arrow{margin-left:auto;color:#78a6d2}.choice-arrow svg{width:19px}.org-pill{display:inline-flex;align-items:center;gap:6px;color:#2877c5;background:#eef7ff;border:1px solid #d8ebfc;border-radius:999px;padding:5px 10px;font-size:13px}.org-pill svg{width:16px}.empty{padding:24px;text-align:center;border:1px dashed #cddff2;border-radius:14px;color:#8295ab;background:#fafdff}.hidden{display:none!important}footer{margin-top:28px;color:#a1b2c5;font-size:11px;letter-spacing:.05em;text-align:center}@media(max-width:560px){body{padding:14px}.panel{padding:26px 20px 20px;border-radius:18px}.eyebrow{margin-top:34px}h1{font-size:25px}}`;
 }
 
 function createLarkOAuthUrl({ state, userId = "", botId = "" }) {
