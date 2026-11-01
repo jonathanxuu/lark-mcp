@@ -1988,6 +1988,12 @@ const httpServer = http.createServer(async (req, res) => {
     try {
       const body = parseFormBody(req, await readRequestBody(req));
       const selection = organizationSelectionStates.get(body.selection_token ?? "");
+      if (selection?.redirectLocation && selection.oauthState && oauthStates.has(selection.oauthState)) {
+        // Browsers or OAuth clients may retry a form POST after a 302. Reuse
+        // the original redirect while the pending Lark OAuth state is alive.
+        redirect(res, selection.redirectLocation);
+        return;
+      }
       const organization = organizationsFromRegistry().find((item) => item.id === body.organization_id);
       if (!selection || selection.expiresAt < Date.now()) throw new Error("Invalid or expired organization selection");
       if (!organization) throw new Error("Organization not found");
@@ -2004,7 +2010,9 @@ const httpServer = http.createServer(async (req, res) => {
         expectedTenantKey: organization.bots.find((bot) => bot.tenantKey)?.tenantKey ?? "",
         createdAt: Date.now(),
       });
-      redirect(res, createLarkOAuthUrl({ state, botId: bootstrap.id }));
+      selection.oauthState = state;
+      selection.redirectLocation = createLarkOAuthUrl({ state, botId: bootstrap.id });
+      redirect(res, selection.redirectLocation);
     } catch (error) {
       json(res, 400, { error: error.message });
     }
