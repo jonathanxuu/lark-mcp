@@ -299,7 +299,7 @@ async function fetchLark(url, options, operation) {
 async function getTenantAccessToken(connectionId = "") {
   const connection = getConnection(connectionId);
   const bot = getConnectionBot(connectionId);
-  const tenantKey = connection.tenantKey ?? connection.user?.tenant_key ?? connection.user?.tenantKey ?? "";
+  const tenantKey = connection.tenantKey || connection.user?.tenant_key || connection.user?.tenantKey || bot.tenantKey || "";
   const cacheKey = `${bot.id}:${tenantKey || "default"}`;
   const cached = tenantAccessTokenCache.get(cacheKey);
   if (cached?.value && Date.now() < cached.expiresAt) return cached.value;
@@ -308,6 +308,7 @@ async function getTenantAccessToken(connectionId = "") {
   const endpoint = tenantKey
     ? `${baseUrl}/open-apis/auth/v3/tenant_access_token`
     : `${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`;
+  console.error(`[Lark] requesting tenant_access_token bot=${bot.id} tenant_key=${tenantKey || "(empty)"} endpoint=${endpoint}`);
   const requestBody = tenantKey
     ? { app_access_token: appAccessToken, tenant_key: tenantKey }
     : { app_id: bot.appId, app_secret: bot.appSecret };
@@ -1946,7 +1947,7 @@ const httpServer = http.createServer(async (req, res) => {
           refreshExpiresAt: token.refreshExpiresAt,
           userId: selection.pending.userId,
           user,
-          tenantKey: selection.tenantKey,
+          tenantKey: selection.tenantKey || bot.tenantKey || "",
           oauthBotId: bot.id,
           selectedBotId: bot.id,
         });
@@ -2174,7 +2175,7 @@ const httpServer = http.createServer(async (req, res) => {
         refreshExpiresAt: Date.now() + Math.max(60, (token.refresh_expires_in ?? 2592000) - 300) * 1000,
         userId: pending.userId,
         user,
-        tenantKey: userTenantKey,
+        tenantKey: userTenantKey || pending.expectedTenantKey || oauthBot.tenantKey || "",
         oauthBotId: oauthBot.id,
         selectedBotId: oauthBot.id,
       });
