@@ -265,16 +265,16 @@ function parseFormBody(req, body) {
   return Object.fromEntries(new URLSearchParams(body));
 }
 
-async function parseJson(response) {
+async function parseJson(response, operation = "Lark API") {
   const text = await response.text();
   let body;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(`Lark returned HTTP ${response.status}: ${text.slice(0, 300)}`);
+    throw new Error(`${operation} returned HTTP ${response.status}: ${text.slice(0, 300)}`);
   }
   if (!response.ok || body.code !== 0) {
-    throw new Error(`Lark API error ${body.code ?? response.status}: ${body.msg ?? text}`);
+    throw new Error(`${operation} failed: Lark API error ${body.code ?? response.status}: ${body.msg ?? text}`);
   }
   return body;
 }
@@ -316,7 +316,7 @@ async function getTenantAccessToken(connectionId = "") {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(requestBody),
   });
-  const body = await parseJson(response);
+  const body = await parseJson(response, `tenant_access_token for Bot ${bot.id}`);
   const token = body.tenant_access_token;
   tenantAccessTokenCache.set(cacheKey, {
     value: token,
@@ -331,6 +331,7 @@ async function getAppAccessToken(bot = botRegistry[0]) {
     return cached.value;
   }
 
+  console.error(`[Lark] requesting app_access_token bot=${bot.id} app_id=${bot.appId} base_url=${baseUrl}`);
   const response = await fetchLark(`${baseUrl}/open-apis/auth/v3/app_access_token/internal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -339,7 +340,7 @@ async function getAppAccessToken(bot = botRegistry[0]) {
       app_secret: bot.appSecret,
     }),
   });
-  const body = await parseJson(response);
+  const body = await parseJson(response, `app_access_token for Bot ${bot.id} (app_id ${bot.appId})`);
   appAccessTokenCache.set(bot.id, {
     value: body.app_access_token,
     expiresAt: Date.now() + Math.max(60, body.expire - 300) * 1000,
@@ -1834,6 +1835,7 @@ function createServer() {
 
 const httpServer = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  console.log(`[HTTP] ${req.method} ${requestUrl.pathname}`);
 
   if (requestUrl.pathname === "/.well-known/oauth-protected-resource/mcp" ||
       requestUrl.pathname === "/.well-known/oauth-protected-resource") {
