@@ -1,6 +1,8 @@
 import "dotenv/config";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { URL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -19,21 +21,56 @@ const defaultOutputFolderToken = process.env.LARK_OUTPUT_FOLDER_TOKEN ?? "";
 const defaultOutputFolderName = "Counso Lark Bot";
 const mcpIssuer = process.env.MCP_OAUTH_ISSUER ?? publicBaseUrl;
 const mcpResource = process.env.MCP_RESOURCE ?? `${mcpIssuer}/mcp`;
+const botStorePath = process.env.LARK_BOT_STORE_PATH ?? "./data/lark-bots.enc.json";
+const botStoreKey = process.env.LARK_BOT_STORE_KEY ?? "";
+const adminToken = process.env.LARK_ADMIN_TOKEN ?? "";
 
-function loadBotRegistry() {
+function encryptSecret(secret) {
+  if (!botStoreKey) throw new Error("LARK_BOT_STORE_KEY is required for encrypted Bot storage");
+  const key = crypto.createHash("sha256").update(botStoreKey).digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
+  return {
+    iv: iv.toString("base64url"),
+    ciphertext: ciphertext.toString("base64url"),
+    tag: cipher.getAuthTag().toString("base64url"),
+  };
+}
+
+function decryptSecret(value) {
+  if (!botStoreKey) throw new Error("LARK_BOT_STORE_KEY is required for encrypted Bot storage");
+  const key = crypto.createHash("sha256").update(botStoreKey).digest();
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(value.iv, "base64url"));
+  decipher.setAuthTag(Buffer.from(value.tag, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(value.ciphertext, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+function readBotStore() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(botStorePath, "utf8"));
+    return Array.isArray(raw.bots) ? raw.bots : [];
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw new Error(`Cannot read Lark Bot store: ${error.message}`);
+  }
+}
+
+function writeBotStore(bots) {
+  fs.mkdirSync(path.dirname(path.resolve(botStorePath)), { recursive: true });
+  const tempPath = `${botStorePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify({ version: 1, bots }, null, 2), { mode: 0o600 });
+  fs.renameSync(tempPath, botStorePath);
+}
+
+function loadStaticBotRegistry() {
   const configured = process.env.LARK_BOTS_JSON?.trim();
   if (!configured) {
-    if (!process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) {
-      throw new Error("LARK_APP_ID and LARK_APP_SECRET are required when LARK_BOTS_JSON is not configured");
-    }
-    return [{
-      id: "default",
-      name: "COUNSO Lark 助手",
-      appId: process.env.LARK_APP_ID,
-      appSecret: process.env.LARK_APP_SECRET,
-      outputFolderToken: defaultOutputFolderToken,
-      description: "默认 Lark 应用",
-    }];
+    if (!process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) return [];
+    return [{ id: "default", name: "COUNSO Lark 助手", appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET, outputFolderToken: defaultOutputFolderToken, description: "默认 Lark 应用" }];
   }
 
   let bots;
@@ -62,11 +99,70 @@ function loadBotRegistry() {
   return normalized;
 }
 
-const botRegistry = loadBotRegistry();
-const botById = new Map(botRegistry.map((bot) => [bot.id, bot]));
+function loadBotRegistry() {
+  const staticBots = loadStaticBotRegistry();
+  const storedBots = readBotStore().map((bot) => ({
+    id: bot.id,
+    name: bot.name,
+    appId: bot.app_id,
+    appSecret: decryptSecret(bot.app_secret),
+    outputFolderToken: bot.output_folder_token ?? defaultOutputFolderToken,
+    description: bot.description ?? "",
+    organizationId: bot.organization_id ?? "",
+    organizationName: bot.organization_name ?? "",
+    tenantKey: bot.tenant_key ?? "",
+    bootstrap: bot.bootstrap === true,
+    source: "store",
+  }));
+  const merged = new Map(staticBots.map((bot) => [bot.id, { ...bot, source: "env" }]));
+  for (const bot of storedBots) merged.set(bot.id, bot);
+  return [...merged.values()];
+}
+
+let botRegistry = loadBotRegistry();
+let botById = new Map(botRegistry.map((bot) => [bot.id, bot]));
+
+function refreshBotRegistry() {
+  botRegistry = loadBotRegistry();
+  botById = new Map(botRegistry.map((bot) => [bot.id, bot]));
+  appAccessTokenCache.clear();
+  tenantAccessTokenCache.clear();
+}
+
+function saveManagedBot({ id, name, appId, appSecret, outputFolderToken = "", description = "", organizationId = "", organizationName = "", tenantKey = "", bootstrap = false }) {
+  const bots = readBotStore().filter((bot) => bot.id !== id);
+  if (bootstrap) {
+    for (const bot of bots) {
+      if (bot.organization_id === organizationId) bot.bootstrap = false;
+    }
+  }
+  bots.push({
+    id,
+    name,
+    app_id: appId,
+    app_secret: encryptSecret(appSecret),
+    output_folder_token: outputFolderToken || defaultOutputFolderToken,
+    description,
+    organization_id: organizationId,
+    organization_name: organizationName,
+    tenant_key: tenantKey,
+    bootstrap,
+  });
+  writeBotStore(bots);
+  refreshBotRegistry();
+  return getBot(id);
+}
+
+function removeManagedBot(id) {
+  const bots = readBotStore().filter((bot) => bot.id !== id);
+  writeBotStore(bots);
+  refreshBotRegistry();
+}
 const appAccessTokenCache = new Map();
 const tenantAccessTokenCache = new Map();
 const oauthStates = new Map();
+const organizationSelectionStates = new Map();
+const botSelectionStates = new Map();
 const userConnections = new Map();
 const mcpClients = new Map();
 const mcpAuthorizationCodes = new Map();
@@ -92,8 +188,26 @@ function publicBot(bot) {
   return {
     id: bot.id,
     name: bot.name,
+    app_id: bot.appId,
     description: bot.description,
+    organization_id: bot.organizationId || null,
+    organization_name: bot.organizationName || null,
   };
+}
+
+function organizationsFromRegistry() {
+  const organizations = new Map();
+  for (const bot of botRegistry) {
+    if (!bot.organizationId) continue;
+    const organization = organizations.get(bot.organizationId) ?? {
+      id: bot.organizationId,
+      name: bot.organizationName || bot.organizationId,
+      bots: [],
+    };
+    organization.bots.push(bot);
+    organizations.set(bot.organizationId, organization);
+  }
+  return [...organizations.values()];
 }
 
 function getBot(botId = "") {
@@ -299,6 +413,41 @@ async function getLarkUserInfo(accessToken) {
   });
   const body = await parseJson(response);
   return body.data ?? body;
+}
+
+function htmlEscape(value) {
+  return String(value ?? "").replace(/[&<>\"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
+}
+
+function renderOrganizationSelectionPage(selectionToken, organizations) {
+  const rows = organizations.map((organization) =>
+    `<li><strong>${htmlEscape(organization.name)}</strong> `
+      + `<button name="organization_id" value="${htmlEscape(organization.id)}">选择组织</button></li>`
+  ).join("\n");
+  return `<!doctype html><meta charset="utf-8"><title>选择 Lark 组织</title>
+    <style>body{font:16px system-ui;max-width:760px;margin:48px auto;padding:0 20px}li{margin:16px 0}button{margin-left:12px;padding:6px 10px}</style>
+    <h1>选择用于 Lark OAuth 身份验证的组织</h1>
+    <p>请选择你要进行 Lark OAuth 身份验证的组织。验证完成后，你还可以选择该组织内要使用的 Bot。你不需要输入 App ID 或 App Secret。</p>
+    <form method="post" action="/oauth/lark/select-organization"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><ul>${rows || "<li>管理员还没有配置可用组织。</li>"}</ul></form>`;
+}
+
+function renderBotSelectionPage(selectionToken, organization, bots, authorizedBotId = "") {
+  const rows = bots.map((bot) => {
+    const sameAuthorization = bot.id === authorizedBotId;
+    return `<li><strong>${htmlEscape(bot.name)}</strong> `
+      + `<button name="bot_id" value="${htmlEscape(bot.id)}">${sameAuthorization ? "使用并完成连接" : "授权并添加到 MCP"}</button></li>`;
+  }).join("\n");
+  return `<!doctype html><meta charset="utf-8"><title>选择 Lark Bot</title>
+    <style>body{font:16px system-ui;max-width:760px;margin:48px auto;padding:0 20px}li{margin:16px 0}button{margin-left:12px;padding:6px 10px}</style>
+    <h1>选择要添加到 MCP 的 Lark Bot</h1>
+    <p>组织：${htmlEscape(organization.name)}</p>
+    <form method="post" action="/oauth/lark/select"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><ul>${rows || "<li>该组织还没有配置 Bot。</li>"}</ul></form>`;
 }
 
 function createLarkOAuthUrl({ state, userId = "", botId = "" }) {
@@ -1129,15 +1278,12 @@ function createServer() {
     async ({ connection_id }) => {
       const resolvedConnectionId = resolveConnectionId(connection_id);
       const connection = getConnection(resolvedConnectionId);
-      const authorizedBot = getBot(connection.oauthBotId);
-      const bots = botRegistry
-        .filter((bot) => bot.appId === authorizedBot.appId)
-        .map(publicBot);
+      const bots = botRegistry.map(publicBot);
       return {
         content: [{ type: "text", text: JSON.stringify({
           selected_bot_id: connection.selectedBotId ?? connection.oauthBotId,
           bots,
-          note: "只能选择使用同一个 OAuth 应用完成授权的 Bot；切换到其他 OAuth 应用需要重新授权。",
+          note: "不同 app_id 的 Bot 需要重新完成一次 OAuth；MCP 连接会绑定当前已授权的 Bot。",
         }, null, 2) }],
         structuredContent: {
           selected_bot_id: connection.selectedBotId ?? connection.oauthBotId,
@@ -1151,7 +1297,7 @@ function createServer() {
     "lark_select_bot",
     {
       title: "Select a Lark Bot",
-      description: "Select one configured Lark Bot for the current OAuth connection. The selection is stored on the connection and applies to later read and write tools. The selected Bot must belong to the same OAuth application; selecting another application's Bot requires a new OAuth authorization.",
+      description: "Select one configured Lark Bot for the current OAuth connection. A Bot with a different app_id requires a new OAuth authorization through the browser flow.",
       inputSchema: {
         bot_id: z.string().min(1),
         connection_id: z.string().min(1).optional(),
@@ -1692,6 +1838,141 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
+  if (requestUrl.pathname.startsWith("/admin/lark-bots")) {
+    if (!adminToken || req.headers.authorization !== `Bearer ${adminToken}`) {
+      json(res, 401, { error: "unauthorized" });
+      return;
+    }
+    try {
+      if (requestUrl.pathname === "/admin/lark-bots" && req.method === "GET") {
+        json(res, 200, { bots: botRegistry.map(publicBot) });
+        return;
+      }
+      if (requestUrl.pathname === "/admin/lark-bots" && req.method === "POST") {
+        const body = parseFormBody(req, await readRequestBody(req));
+        const id = String(body.id ?? crypto.randomUUID());
+        const appId = String(body.app_id ?? body.appId ?? "").trim();
+        const appSecret = String(body.app_secret ?? body.appSecret ?? "").trim();
+        const name = String(body.name ?? appId).trim();
+        const organizationId = String(body.organization_id ?? body.organizationId ?? "").trim();
+        const organizationName = String(body.organization_name ?? body.organizationName ?? organizationId).trim();
+        const tenantKey = String(body.tenant_key ?? body.tenantKey ?? "").trim();
+        if (!appId || !appSecret || !name || !organizationId || !tenantKey) throw new Error("id, name, organization_id, tenant_key, app_id and app_secret are required");
+        const bot = saveManagedBot({
+          id,
+          name,
+          appId,
+          appSecret,
+          outputFolderToken: body.output_folder_token ?? "",
+          description: body.description ?? "",
+          organizationId,
+          organizationName,
+          tenantKey,
+          bootstrap: body.bootstrap === true || body.bootstrap === "true",
+        });
+        json(res, 201, { bot: publicBot(bot) });
+        return;
+      }
+      const match = requestUrl.pathname.match(/^\/admin\/lark-bots\/([^/]+)$/);
+      if (match && req.method === "DELETE") {
+        const id = decodeURIComponent(match[1]);
+        const bot = getBot(id);
+        if (bot.source !== "store") throw new Error("Environment-configured Bots cannot be deleted through the admin API");
+        removeManagedBot(id);
+        json(res, 200, { deleted: id });
+        return;
+      }
+      json(res, 404, { error: "not_found" });
+    } catch (error) {
+      json(res, 400, { error: error.message });
+    }
+    return;
+  }
+
+  if (requestUrl.pathname === "/oauth/lark/select" && req.method === "POST") {
+    try {
+      const body = parseFormBody(req, await readRequestBody(req));
+      const selection = botSelectionStates.get(body.selection_token ?? "");
+      const bot = getBot(body.bot_id ?? "");
+      if (!selection || selection.expiresAt < Date.now()) throw new Error("Invalid or expired Bot selection");
+      if (bot.organizationId !== selection.organization.id) throw new Error("The selected Bot does not belong to the selected organization");
+      botSelectionStates.delete(body.selection_token ?? "");
+      if (bot.id === selection.authorizedBotId) {
+        const token = selection.bootstrapToken;
+        const user = selection.bootstrapUser;
+        const connectionId = crypto.randomUUID();
+        userConnections.set(connectionId, {
+          accessToken: token.accessToken,
+          refreshToken: token.refreshToken,
+          expiresAt: token.expiresAt,
+          refreshExpiresAt: token.refreshExpiresAt,
+          userId: selection.pending.userId,
+          user,
+          tenantKey: selection.tenantKey,
+          oauthBotId: bot.id,
+          selectedBotId: bot.id,
+        });
+        if (selection.pending.mcp) {
+          const code = randomToken();
+          mcpAuthorizationCodes.set(code, {
+            connectionId,
+            clientId: selection.pending.mcp.clientId,
+            redirectUri: selection.pending.mcp.redirectUri,
+            codeChallenge: selection.pending.mcp.codeChallenge,
+            expiresAt: Date.now() + 5 * 60 * 1000,
+          });
+          const callback = new URL(selection.pending.mcp.redirectUri);
+          callback.searchParams.set("code", code);
+          callback.searchParams.set("state", selection.pending.mcp.state);
+          redirect(res, callback.toString());
+        } else {
+          json(res, 200, { ok: true, connection_id: connectionId, selected_bot: publicBot(bot) });
+        }
+        return;
+      }
+      const state = crypto.randomBytes(24).toString("hex");
+      oauthStates.set(state, {
+        ...selection.pending,
+        botId: bot.id,
+        stage: "bot",
+        expectedTenantKey: selection.tenantKey,
+        organization: selection.organization,
+        createdAt: Date.now(),
+      });
+      redirect(res, createLarkOAuthUrl({ state, botId: bot.id }));
+    } catch (error) {
+      json(res, 400, { error: error.message });
+    }
+    return;
+  }
+
+  if (requestUrl.pathname === "/oauth/lark/select-organization" && req.method === "POST") {
+    try {
+      const body = parseFormBody(req, await readRequestBody(req));
+      const selection = organizationSelectionStates.get(body.selection_token ?? "");
+      const organization = organizationsFromRegistry().find((item) => item.id === body.organization_id);
+      if (!selection || selection.expiresAt < Date.now()) throw new Error("Invalid or expired organization selection");
+      if (!organization) throw new Error("Organization not found");
+      const bootstraps = organization.bots.filter((bot) => bot.bootstrap);
+      if (bootstraps.length !== 1) throw new Error("The selected organization must have exactly one bootstrap Bot");
+      const bootstrap = bootstraps[0];
+      organizationSelectionStates.delete(body.selection_token ?? "");
+      const state = crypto.randomBytes(24).toString("hex");
+      oauthStates.set(state, {
+        ...selection.pending,
+        botId: bootstrap.id,
+        stage: "organization_bootstrap",
+        organization,
+        expectedTenantKey: organization.bots.find((bot) => bot.tenantKey)?.tenantKey ?? "",
+        createdAt: Date.now(),
+      });
+      redirect(res, createLarkOAuthUrl({ state, botId: bootstrap.id }));
+    } catch (error) {
+      json(res, 400, { error: error.message });
+    }
+    return;
+  }
+
   if (requestUrl.pathname === "/oauth/authorize") {
     const clientId = requestUrl.searchParams.get("client_id") ?? "";
     const client = mcpClients.get(clientId);
@@ -1703,26 +1984,21 @@ const httpServer = http.createServer(async (req, res) => {
       json(res, 400, { error: "invalid_request", error_description: "Valid OAuth client and PKCE parameters are required" });
       return;
     }
-    let oauthBot;
-    try {
-      oauthBot = getBot(requestUrl.searchParams.get("bot_id") ?? "");
-    } catch (error) {
-      json(res, 400, { error: "invalid_request", error_description: error.message });
-      return;
-    }
-    const state = crypto.randomBytes(24).toString("hex");
-    oauthStates.set(state, {
-      userId: "",
-      createdAt: Date.now(),
-      botId: oauthBot.id,
-      mcp: {
-        clientId,
-        redirectUri,
-        codeChallenge,
-        state: requestUrl.searchParams.get("state") ?? "",
+    const selectionToken = randomToken();
+    organizationSelectionStates.set(selectionToken, {
+      pending: {
+        userId: "",
+        mcp: {
+          clientId,
+          redirectUri,
+          codeChallenge,
+          state: requestUrl.searchParams.get("state") ?? "",
+        },
       },
+      expiresAt: Date.now() + 10 * 60 * 1000,
     });
-    redirect(res, createLarkOAuthUrl({ state, botId: oauthBot.id }));
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderOrganizationSelectionPage(selectionToken, organizationsFromRegistry()));
     return;
   }
 
@@ -1783,6 +2059,7 @@ const httpServer = http.createServer(async (req, res) => {
     oauthStates.set(state, {
       userId: requestUrl.searchParams.get("user_id") ?? "",
       botId,
+      stage: "bot",
       createdAt: Date.now(),
     });
     const location = createLarkOAuthUrl({
@@ -1813,8 +2090,37 @@ const httpServer = http.createServer(async (req, res) => {
       const oauthBot = getBot(pending.botId ?? "");
       const tokenBody = await exchangeAuthorizationCode(requestUrl.searchParams.get("code") ?? "", oauthBot);
       const token = tokenBody.data ?? tokenBody;
-      const connectionId = crypto.randomUUID();
       const user = await getLarkUserInfo(token.access_token);
+      const userTenantKey = user.tenant_key ?? user.tenantKey ?? token.tenant_key ?? tokenBody.tenant_key ?? "";
+      if (pending.expectedTenantKey && userTenantKey && pending.expectedTenantKey !== userTenantKey) {
+        throw new Error("The Lark user is not a member of the selected organization");
+      }
+      if (pending.stage === "organization_bootstrap") {
+        const organization = pending.organization;
+        const bots = botRegistry.filter((bot) => bot.organizationId === organization.id);
+        if (bots.length === 0) throw new Error("No Bot is configured for the selected organization");
+        const selectionToken = randomToken();
+        botSelectionStates.set(selectionToken, {
+          pending,
+          organization,
+          bots,
+          authorizedBotId: oauthBot.id,
+          bootstrapUser: user,
+          bootstrapToken: {
+            accessToken: token.access_token,
+            refreshToken: token.refresh_token,
+            expiresAt: Date.now() + Math.max(60, (token.expires_in ?? 7200) - 300) * 1000,
+            refreshExpiresAt: Date.now() + Math.max(60, (token.refresh_expires_in ?? 2592000) - 300) * 1000,
+          },
+          tenantKey: userTenantKey,
+          expiresAt: Date.now() + 10 * 60 * 1000,
+        });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderBotSelectionPage(selectionToken, organization, bots, oauthBot.id));
+        return;
+      }
+
+      const connectionId = crypto.randomUUID();
       userConnections.set(connectionId, {
         accessToken: token.access_token,
         refreshToken: token.refresh_token,
@@ -1822,7 +2128,7 @@ const httpServer = http.createServer(async (req, res) => {
         refreshExpiresAt: Date.now() + Math.max(60, (token.refresh_expires_in ?? 2592000) - 300) * 1000,
         userId: pending.userId,
         user,
-        tenantKey: token.tenant_key ?? tokenBody.tenant_key ?? user.tenant_key ?? user.tenantKey ?? "",
+        tenantKey: userTenantKey,
         oauthBotId: oauthBot.id,
         selectedBotId: oauthBot.id,
       });
@@ -1864,9 +2170,7 @@ const httpServer = http.createServer(async (req, res) => {
       connected: Boolean(connection),
       user: connection ? { name: connection.user?.name, open_id: connection.user?.open_id, user_id: connection.user?.user_id } : null,
       selected_bot: connection ? publicBot(getConnectionBot(requestUrl.searchParams.get("connection_id") ?? "")) : null,
-      available_bots: connection
-        ? botRegistry.filter((bot) => bot.appId === getBot(connection.oauthBotId).appId).map(publicBot)
-        : [],
+      available_bots: connection ? botRegistry.map(publicBot) : [],
       expires_at: connection ? new Date(connection.expiresAt).toISOString() : null,
     }));
     return;
