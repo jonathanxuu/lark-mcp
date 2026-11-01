@@ -1014,7 +1014,22 @@ async function searchLarkDocuments(query = "", pageToken = "", pageSize = 20, co
 async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems = 20, maxFiles = 100, maxWikiNodes = 200, connectionId = "" }) {
   const search = await searchLarkDocuments(query, "", Math.min(maxItems, 20), connectionId);
   const wikiSpaces = await listWikiSpaces("", 50, connectionId);
-  const drive = await listAllDriveFiles("", Math.min(maxFiles, 200), connectionId);
+  const bot = getConnectionBot(connectionId);
+  const driveSources = [await listAllDriveFiles("", Math.min(maxFiles, 200), connectionId)];
+  if (bot.outputFolderToken) {
+    const sharedFolder = await listAllDriveFiles(bot.outputFolderToken, Math.min(maxFiles, 200), connectionId);
+    sharedFolder.files = (sharedFolder.files ?? []).map((file) => ({
+      ...file,
+      folder_path: [defaultOutputFolderName, ...(file.folder_path ?? [])],
+    }));
+    driveSources.push(sharedFolder);
+  }
+  const drive = {
+    files: [...new Map(driveSources.flatMap((source) => source.files ?? []).map((file) => [file.token, file])).values()]
+      .slice(0, Math.min(maxFiles, 200)),
+    truncated: driveSources.some((source) => source.truncated),
+    scanned_folders: [...new Set(driveSources.flatMap((source) => source.scanned_folders ?? []))],
+  };
   const wikiInventory = await listAllWikiDocuments(wikiSpaces, Math.min(maxWikiNodes, 500), connectionId);
   let wikiDocuments = wikiInventory.documents;
   let searchResults = search.results.map((item) => ({
