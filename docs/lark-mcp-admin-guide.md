@@ -67,8 +67,27 @@ curl -X POST http://localhost:4020/admin/lark-bots \
     "bootstrap": true,
     "app_id": "cli_finance_xxx",
     "app_secret": "finance_app_secret",
+    "output_folder_token": "fldcn_shared_folder_xxx",
     "description": "财务文档助手"
   }'
+```
+
+飞书 Bot 使用相同的 `output_folder_token` 字段，只需将 `platform` 设置为 `feishu`：
+
+```json
+{
+  "id": "feishu-finance-bot",
+  "platform": "feishu",
+  "name": "飞书财务 Bot",
+  "organization_id": "company-a-feishu",
+  "organization_name": "公司 A 飞书",
+  "tenant_key": "tenant_feishu_xxx",
+  "bootstrap": true,
+  "app_id": "cli_feishu_xxx",
+  "app_secret": "feishu_app_secret",
+  "output_folder_token": "fldcn_feishu_shared_folder_xxx",
+  "description": "飞书财务文档助手"
+}
 ```
 
 成功后，服务会把 Secret 加密写入 `LARK_BOT_STORE_PATH`，并立即刷新运行中的 Bot 注册表，不需要重启 MCP。
