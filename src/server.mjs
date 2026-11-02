@@ -2007,9 +2007,11 @@ const httpServer = http.createServer(async (req, res) => {
     try {
       const body = parseFormBody(req, await readRequestBody(req));
       const selection = organizationSelectionStates.get(body.selection_token ?? "");
-      if (selection?.redirectLocation && selection.oauthState && oauthStates.has(selection.oauthState)) {
+      if (selection?.redirectLocation &&
+          selection.selectedOrganizationId === body.organization_id &&
+          selection.oauthState && oauthStates.has(selection.oauthState)) {
         // Browsers or OAuth clients may retry a form POST after a 302. Reuse
-        // the original redirect while the pending Lark OAuth state is alive.
+        // the original redirect only when they resubmit the same organization.
         redirect(res, selection.redirectLocation);
         return;
       }
@@ -2019,6 +2021,9 @@ const httpServer = http.createServer(async (req, res) => {
       const bootstraps = organization.bots.filter((bot) => bot.bootstrap);
       if (bootstraps.length !== 1) throw new Error("The selected organization must have exactly one bootstrap Bot");
       const bootstrap = bootstraps[0];
+      if (selection.oauthState && selection.selectedOrganizationId !== body.organization_id) {
+        oauthStates.delete(selection.oauthState);
+      }
       const state = crypto.randomBytes(24).toString("hex");
       oauthStates.set(state, {
         ...selection.pending,
@@ -2028,6 +2033,7 @@ const httpServer = http.createServer(async (req, res) => {
         expectedTenantKey: organization.bots.find((bot) => bot.tenantKey)?.tenantKey ?? "",
         createdAt: Date.now(),
       });
+      selection.selectedOrganizationId = body.organization_id;
       selection.oauthState = state;
       selection.redirectLocation = createLarkOAuthUrl({ state, botId: bootstrap.id });
       redirect(res, selection.redirectLocation);
