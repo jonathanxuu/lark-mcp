@@ -2019,7 +2019,6 @@ const httpServer = http.createServer(async (req, res) => {
       const bootstraps = organization.bots.filter((bot) => bot.bootstrap);
       if (bootstraps.length !== 1) throw new Error("The selected organization must have exactly one bootstrap Bot");
       const bootstrap = bootstraps[0];
-      organizationSelectionStates.delete(body.selection_token ?? "");
       const state = crypto.randomBytes(24).toString("hex");
       oauthStates.set(state, {
         ...selection.pending,
