@@ -1347,6 +1347,8 @@ async function createLarkDocument({ title, content, folderToken = "", folderName
     throw new Error(`Lark document creation did not complete: ${JSON.stringify(data).slice(0, 500)}`);
   }
 
+  const platformLabel = getConnectionProvider(connectionId).label;
+  const defaultFolderLabel = `Counso ${platformLabel} Bot 默认共享文件夹`;
   const result = {
     document_id: document.document_id,
     title: document.title ?? title,
@@ -1359,7 +1361,7 @@ async function createLarkDocument({ title, content, folderToken = "", folderName
       ? storageTarget === "default_public_folder" ? "configured_public_folder" : storageTarget
       : "user_drive_root",
     storage_note: storageTarget === "default_public_folder"
-      ? "文档已放入 Counso Lark Bot 文件夹；文件夹的 Lark 共享设置决定哪些用户可以看到。"
+      ? `文档已放入 ${defaultFolderLabel}；文件夹的 ${platformLabel} 共享设置决定哪些用户可以看到。`
       : storageTarget === "user_folder"
         ? "文档已放入当前 OAuth 用户指定的网盘文件夹。"
         : "文档已放入当前 OAuth 用户的网盘根目录。",
