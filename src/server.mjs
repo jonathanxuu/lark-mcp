@@ -130,6 +130,10 @@ function refreshBotRegistry() {
 }
 
 function saveManagedBot({ id, name, appId, appSecret, outputFolderToken = "", description = "", organizationId = "", organizationName = "", tenantKey = "", bootstrap = false }) {
+  const existing = readBotStore().find((bot) => bot.id === id);
+  if (existing && existing.organization_id !== organizationId) {
+    throw new Error(`Bot id "${id}" is already registered to organization "${existing.organization_id}"; use a globally unique Bot id`);
+  }
   const bots = readBotStore().filter((bot) => bot.id !== id);
   if (bootstrap) {
     for (const bot of bots) {
@@ -430,7 +434,7 @@ function renderOrganizationSelectionPage(selectionToken, organizations) {
   const rows = organizations.map((organization) => `
     <button class="choice-card" type="submit" name="organization_id" value="${htmlEscape(organization.id)}" data-search="${htmlEscape(organization.name)}">
       <span class="choice-icon">${buildingIcon()}</span>
-      <span class="choice-copy"><strong>${htmlEscape(organization.name)}</strong><small>使用该组织进行 Lark OAuth 身份验证</small></span>
+      <span class="choice-copy"><strong>${htmlEscape(organization.name)}</strong></span>
       <span class="choice-arrow">${arrowIcon()}</span>
     </button>`).join("\n");
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择 Lark 组织</title>
