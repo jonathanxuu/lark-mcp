@@ -12,18 +12,44 @@ import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import * as XLSX from "xlsx";
 
-const baseUrl = process.env.LARK_BASE_URL ?? "https://open.larksuite.com";
 const port = Number(process.env.PORT ?? 8787);
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`).replace(/\/+$/, "");
-const oauthRedirectUri = process.env.LARK_OAUTH_REDIRECT_URI ?? `${publicBaseUrl}/oauth/lark/callback`;
-const oauthScopes = process.env.LARK_OAUTH_SCOPES ?? "docs:document.content:read docx:document:create drive:drive";
-const defaultOutputFolderToken = process.env.LARK_OUTPUT_FOLDER_TOKEN ?? "";
 const defaultOutputFolderName = "Counso Lark Bot";
 const mcpIssuer = process.env.MCP_OAUTH_ISSUER ?? publicBaseUrl;
 const mcpResource = process.env.MCP_RESOURCE ?? `${mcpIssuer}/mcp`;
 const botStorePath = process.env.LARK_BOT_STORE_PATH ?? "./data/lark-bots.enc.json";
 const botStoreKey = process.env.LARK_BOT_STORE_KEY ?? "";
 const adminToken = process.env.LARK_ADMIN_TOKEN ?? "";
+
+const defaultOAuthScopes = "docs:document.content:read docx:document:create drive:drive";
+const providers = {
+  lark: {
+    id: "lark",
+    label: "Lark",
+    apiBaseUrl: process.env.LARK_BASE_URL ?? "https://open.larksuite.com",
+    oauthBaseUrl: process.env.LARK_OAUTH_BASE_URL ?? "https://accounts.larksuite.com",
+    webBaseUrl: process.env.LARK_WEB_BASE_URL ?? "https://www.larksuite.com",
+    oauthRedirectUri: process.env.LARK_OAUTH_REDIRECT_URI ?? `${publicBaseUrl}/oauth/lark/callback`,
+    oauthScopes: process.env.LARK_OAUTH_SCOPES ?? defaultOAuthScopes,
+    defaultOutputFolderToken: process.env.LARK_OUTPUT_FOLDER_TOKEN ?? "",
+  },
+  feishu: {
+    id: "feishu",
+    label: "飞书",
+    apiBaseUrl: process.env.FEISHU_BASE_URL ?? "https://open.feishu.cn",
+    oauthBaseUrl: process.env.FEISHU_OAUTH_BASE_URL ?? "https://accounts.feishu.cn",
+    webBaseUrl: process.env.FEISHU_WEB_BASE_URL ?? "https://www.feishu.cn",
+    oauthRedirectUri: process.env.FEISHU_OAUTH_REDIRECT_URI ?? `${publicBaseUrl}/oauth/feishu/callback`,
+    oauthScopes: process.env.FEISHU_OAUTH_SCOPES ?? defaultOAuthScopes,
+    defaultOutputFolderToken: process.env.FEISHU_OUTPUT_FOLDER_TOKEN ?? "",
+  },
+};
+
+function getProvider(provider = "lark") {
+  const resolved = providers[provider];
+  if (!resolved) throw new Error(`Unsupported platform: ${provider}`);
+  return resolved;
+}
 
 function encryptSecret(secret) {
   if (!botStoreKey) throw new Error("LARK_BOT_STORE_KEY is required for encrypted Bot storage");
@@ -70,7 +96,7 @@ function loadStaticBotRegistry() {
   const configured = process.env.LARK_BOTS_JSON?.trim();
   if (!configured) {
     if (!process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) return [];
-    return [{ id: "default", name: "COUNSO Lark 助手", appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET, outputFolderToken: defaultOutputFolderToken, description: "默认 Lark 应用" }];
+    return [{ id: "default", platform: "lark", name: "COUNSO Lark 助手", appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET, outputFolderToken: providers.lark.defaultOutputFolderToken, description: "默认 Lark 应用" }];
   }
 
   let bots;
@@ -84,14 +110,18 @@ function loadStaticBotRegistry() {
   }
   const normalized = bots.map((bot, index) => ({
     id: String(bot.id ?? `bot-${index + 1}`),
+    platform: String(bot.platform ?? "lark").toLowerCase(),
     name: String(bot.name ?? bot.id ?? `Lark Bot ${index + 1}`),
     appId: bot.app_id ?? bot.appId,
     appSecret: bot.app_secret ?? bot.appSecret,
-    outputFolderToken: bot.output_folder_token ?? bot.outputFolderToken ?? defaultOutputFolderToken,
+    outputFolderToken: bot.output_folder_token ?? bot.outputFolderToken ?? getProvider(String(bot.platform ?? "lark").toLowerCase()).defaultOutputFolderToken,
     description: bot.description ?? "",
   }));
   if (normalized.some((bot) => !bot.appId || !bot.appSecret)) {
     throw new Error("Every LARK_BOTS_JSON entry requires app_id and app_secret");
+  }
+  if (normalized.some((bot) => !providers[bot.platform])) {
+    throw new Error("Every LARK_BOTS_JSON entry requires platform=lark or platform=feishu");
   }
   if (new Set(normalized.map((bot) => bot.id)).size !== normalized.length) {
     throw new Error("LARK_BOTS_JSON bot ids must be unique");
@@ -103,10 +133,11 @@ function loadBotRegistry() {
   const staticBots = loadStaticBotRegistry();
   const storedBots = readBotStore().map((bot) => ({
     id: bot.id,
+    platform: bot.platform ?? "lark",
     name: bot.name,
     appId: bot.app_id,
     appSecret: decryptSecret(bot.app_secret),
-    outputFolderToken: bot.output_folder_token ?? defaultOutputFolderToken,
+    outputFolderToken: bot.output_folder_token ?? getProvider(bot.platform ?? "lark").defaultOutputFolderToken,
     description: bot.description ?? "",
     organizationId: bot.organization_id ?? "",
     organizationName: bot.organization_name ?? "",
@@ -129,15 +160,17 @@ function refreshBotRegistry() {
   tenantAccessTokenCache.clear();
 }
 
-function saveManagedBot({ id, name, appId, appSecret, outputFolderToken = "", description = "", organizationId = "", organizationName = "", tenantKey = "", bootstrap = false }) {
+function saveManagedBot({ id, platform = "lark", name, appId, appSecret, outputFolderToken = "", description = "", organizationId = "", organizationName = "", tenantKey = "", bootstrap = false }) {
+  platform = String(platform).toLowerCase();
+  getProvider(platform);
   const existing = readBotStore().find((bot) => bot.id === id);
-  if (existing && existing.organization_id !== organizationId) {
-    throw new Error(`Bot id "${id}" is already registered to organization "${existing.organization_id}"; use a globally unique Bot id`);
+  if (existing && (existing.organization_id !== organizationId || (existing.platform ?? "lark") !== platform)) {
+    throw new Error(`Bot id "${id}" is already registered to another organization or platform; use a globally unique Bot id`);
   }
   const bots = readBotStore().filter((bot) => bot.id !== id);
   if (bootstrap) {
     for (const bot of bots) {
-      if (bot.organization_id === organizationId) bot.bootstrap = false;
+      if (bot.organization_id === organizationId && (bot.platform ?? "lark") === platform) bot.bootstrap = false;
     }
   }
   bots.push({
@@ -145,7 +178,8 @@ function saveManagedBot({ id, name, appId, appSecret, outputFolderToken = "", de
     name,
     app_id: appId,
     app_secret: encryptSecret(appSecret),
-    output_folder_token: outputFolderToken || defaultOutputFolderToken,
+    platform,
+    output_folder_token: outputFolderToken || getProvider(platform).defaultOutputFolderToken,
     description,
     organization_id: organizationId,
     organization_name: organizationName,
@@ -191,6 +225,7 @@ function resolveConnectionId(connectionId) {
 function publicBot(bot) {
   return {
     id: bot.id,
+    platform: bot.platform ?? "lark",
     name: bot.name,
     app_id: bot.appId,
     description: bot.description,
@@ -203,13 +238,17 @@ function organizationsFromRegistry() {
   const organizations = new Map();
   for (const bot of botRegistry) {
     if (!bot.organizationId) continue;
-    const organization = organizations.get(bot.organizationId) ?? {
+    const platform = bot.platform ?? "lark";
+    const organizationKey = `${platform}:${bot.organizationId}`;
+    const organization = organizations.get(organizationKey) ?? {
       id: bot.organizationId,
+      platform,
+      platform_label: getProvider(platform).label,
       name: bot.organizationName || bot.organizationId,
       bots: [],
     };
     organization.bots.push(bot);
-    organizations.set(bot.organizationId, organization);
+    organizations.set(organizationKey, organization);
   }
   return [...organizations.values()];
 }
@@ -223,6 +262,18 @@ function getBot(botId = "") {
 function getConnectionBot(connectionId = "") {
   const connection = getConnection(connectionId);
   return getBot(connection.selectedBotId || connection.oauthBotId);
+}
+
+function getConnectionProvider(connectionId = "") {
+  return getProvider(getConnectionBot(connectionId).platform ?? "lark");
+}
+
+function getBotWebBaseUrl(bot) {
+  return getProvider(bot.platform ?? "lark").webBaseUrl;
+}
+
+function getConnectionWebBaseUrl(connectionId = "") {
+  return getBotWebBaseUrl(getConnectionBot(connectionId));
 }
 
 function json(res, status, body, headers = {}) {
@@ -303,8 +354,9 @@ async function fetchLark(url, options, operation) {
 async function getTenantAccessToken(connectionId = "") {
   const connection = getConnection(connectionId);
   const bot = getConnectionBot(connectionId);
+  const provider = getProvider(bot.platform ?? "lark");
   const tenantKey = connection.tenantKey || connection.user?.tenant_key || connection.user?.tenantKey || bot.tenantKey || "";
-  const cacheKey = `${bot.id}:${tenantKey || "default"}`;
+  const cacheKey = `${provider.id}:${bot.id}:${tenantKey || "default"}`;
   const cached = tenantAccessTokenCache.get(cacheKey);
   if (cached?.value && Date.now() < cached.expiresAt) return cached.value;
 
@@ -312,8 +364,8 @@ async function getTenantAccessToken(connectionId = "") {
   // their tenant_access_token directly with app_id/app_secret. The
   // non-internal endpoint is for ISV/store Apps and expects an ISV app
   // access token, which causes error 10013 for these standalone Apps.
-  const endpoint = `${baseUrl}/open-apis/auth/v3/tenant_access_token/internal`;
-  console.error(`[Lark] requesting tenant_access_token bot=${bot.id} tenant_key=${tenantKey || "(empty)"} endpoint=${endpoint}`);
+  const endpoint = `${provider.apiBaseUrl}/open-apis/auth/v3/tenant_access_token/internal`;
+  console.error(`[${provider.label}] requesting tenant_access_token bot=${bot.id} tenant_key=${tenantKey || "(empty)"} endpoint=${endpoint}`);
   const requestBody = { app_id: bot.appId, app_secret: bot.appSecret };
   const response = await fetchLark(endpoint, {
     method: "POST",
@@ -330,13 +382,15 @@ async function getTenantAccessToken(connectionId = "") {
 }
 
 async function getAppAccessToken(bot = botRegistry[0]) {
-  const cached = appAccessTokenCache.get(bot.id);
+  const provider = getProvider(bot.platform ?? "lark");
+  const cacheKey = `${provider.id}:${bot.id}`;
+  const cached = appAccessTokenCache.get(cacheKey);
   if (cached?.value && Date.now() < cached.expiresAt) {
     return cached.value;
   }
 
-  console.error(`[Lark] requesting app_access_token bot=${bot.id} app_id=${bot.appId} base_url=${baseUrl}`);
-  const response = await fetchLark(`${baseUrl}/open-apis/auth/v3/app_access_token/internal`, {
+  console.error(`[${provider.label}] requesting app_access_token bot=${bot.id} app_id=${bot.appId} base_url=${provider.apiBaseUrl}`);
+  const response = await fetchLark(`${provider.apiBaseUrl}/open-apis/auth/v3/app_access_token/internal`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -345,7 +399,7 @@ async function getAppAccessToken(bot = botRegistry[0]) {
     }),
   });
   const body = await parseJson(response, `app_access_token for Bot ${bot.id} (app_id ${bot.appId})`);
-  appAccessTokenCache.set(bot.id, {
+  appAccessTokenCache.set(cacheKey, {
     value: body.app_access_token,
     expiresAt: Date.now() + Math.max(60, body.expire - 300) * 1000,
   });
@@ -353,8 +407,9 @@ async function getAppAccessToken(bot = botRegistry[0]) {
 }
 
 async function exchangeAuthorizationCode(code, bot = botRegistry[0]) {
+  const provider = getProvider(bot.platform ?? "lark");
   const appAccessToken = await getAppAccessToken(bot);
-  const response = await fetchLark(`${baseUrl}/open-apis/authen/v1/oidc/access_token`, {
+  const response = await fetchLark(`${provider.apiBaseUrl}/open-apis/authen/v1/oidc/access_token`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${appAccessToken}`,
@@ -369,8 +424,10 @@ async function exchangeAuthorizationCode(code, bot = botRegistry[0]) {
 }
 
 async function refreshUserAccessToken(connection) {
-  const appAccessToken = await getAppAccessToken(getBot(connection.oauthBotId));
-  const response = await fetchLark(`${baseUrl}/open-apis/authen/v1/oidc/refresh_access_token`, {
+  const bot = getBot(connection.oauthBotId);
+  const provider = getProvider(bot.platform ?? "lark");
+  const appAccessToken = await getAppAccessToken(bot);
+  const response = await fetchLark(`${provider.apiBaseUrl}/open-apis/authen/v1/oidc/refresh_access_token`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${appAccessToken}`,
@@ -412,8 +469,9 @@ function getConnection(connectionId = "") {
   return connection;
 }
 
-async function getLarkUserInfo(accessToken) {
-  const response = await fetchLark(`${baseUrl}/open-apis/authen/v1/user_info`, {
+async function getLarkUserInfo(accessToken, bot = botRegistry[0]) {
+  const provider = getProvider(bot.platform ?? "lark");
+  const response = await fetchLark(`${provider.apiBaseUrl}/open-apis/authen/v1/user_info`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   const body = await parseJson(response);
@@ -431,21 +489,28 @@ function htmlEscape(value) {
 }
 
 function renderOrganizationSelectionPage(selectionToken, organizations) {
+  const availablePlatforms = new Set(organizations.map((organization) => organization.platform));
+  const defaultPlatform = availablePlatforms.has("lark") ? "lark" : "feishu";
+  const platformTabs = ["lark", "feishu"].map((platform) => `
+    <button class="platform-tab${platform === defaultPlatform ? " active" : ""}" type="button" data-platform="${platform}">
+      <span class="platform-mark platform-${platform}">${platform === "lark" ? "L" : "飞"}</span>${platform === "lark" ? "Lark" : "飞书"}
+    </button>`).join("");
   const rows = organizations.map((organization) => `
-    <button class="choice-card" type="submit" name="organization_id" value="${htmlEscape(organization.id)}" data-search="${htmlEscape(organization.name)}">
+    <button class="choice-card" type="submit" name="organization_id" value="${htmlEscape(organization.id)}" data-platform="${htmlEscape(organization.platform)}" data-search="${htmlEscape(organization.name)}">
       <span class="choice-icon">${buildingIcon()}</span>
-      <span class="choice-copy"><strong>${htmlEscape(organization.name)}</strong></span>
+      <span class="choice-copy"><strong>${htmlEscape(organization.name)}</strong><small>${htmlEscape(organization.platform_label)}</small></span>
       <span class="choice-arrow">${arrowIcon()}</span>
     </button>`).join("\n");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择 Lark 组织</title>
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择平台和组织</title>
     <style>${oauthPageStyles()}</style></head><body><main class="panel">
       <div class="brand"><span class="brand-mark">${sparkIcon()}</span><span>COUNSO <em>LARK MCP</em></span></div>
-      <div class="eyebrow">SECURE CONNECTION</div><h1>选择用于 Lark OAuth 身份验证的组织</h1>
-      <p class="subtitle">选择组织后，我们将验证你的 Lark 身份，并让你选择要使用的 Bot。</p>
+      <div class="eyebrow">SECURE CONNECTION</div><h1>选择平台和组织</h1>
+      <p class="subtitle">先选择你要连接的平台，再选择对应的组织。</p>
+      <div class="platform-tabs" role="tablist">${platformTabs}</div>
       <label class="search"><span>${searchIcon()}</span><input id="search" type="search" placeholder="搜索组织名称" autocomplete="off"></label>
-      <form id="organization-form" method="post" action="/oauth/lark/select-organization"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><div id="choices" class="choices">${rows || '<div class="empty">管理员还没有配置可用组织。</div>'}</div></form>
+      <form id="organization-form" method="post" action="/oauth/lark/select-organization"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><input id="platform" type="hidden" name="platform" value="${htmlEscape(defaultPlatform)}"><div id="choices" class="choices">${rows || '<div class="empty">管理员还没有配置可用组织。</div>'}</div></form>
       <div id="empty-search" class="empty hidden">没有找到匹配的组织</div><footer>Protected by COUNSO Lark MCP</footer>
-    </main><script>const input=document.querySelector('#search');const cards=[...document.querySelectorAll('.choice-card')];const empty=document.querySelector('#empty-search');input?.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();let visible=0;cards.forEach(c=>{const show=!q||c.dataset.search.toLowerCase().includes(q);c.classList.toggle('hidden',!show);if(show)visible++});empty.classList.toggle('hidden',visible!==0||cards.length===0)});</script></body></html>`;
+    </main><script>const input=document.querySelector('#search');const platformInput=document.querySelector('#platform');const cards=[...document.querySelectorAll('.choice-card')];const tabs=[...document.querySelectorAll('.platform-tab')];const empty=document.querySelector('#empty-search');let activePlatform='${defaultPlatform}';function filter(){const q=(input?.value||'').trim().toLowerCase();let visible=0;cards.forEach(c=>{const show=c.dataset.platform===activePlatform&&(!q||c.dataset.search.toLowerCase().includes(q));c.classList.toggle('hidden',!show);if(show)visible++});empty.classList.toggle('hidden',visible!==0)}cards.forEach(card=>card.addEventListener('click',()=>{if(platformInput)platformInput.value=card.dataset.platform}));tabs.forEach(tab=>tab.addEventListener('click',()=>{activePlatform=tab.dataset.platform;tabs.forEach(item=>item.classList.toggle('active',item===tab));if(platformInput)platformInput.value=activePlatform;if(input)input.value='';filter()}));input?.addEventListener('input',filter);filter();</script></body></html>`;
 }
 
 function renderBotSelectionPage(selectionToken, organization, bots, authorizedBotId = "") {
@@ -457,11 +522,11 @@ function renderBotSelectionPage(selectionToken, organization, bots, authorizedBo
       <span class="choice-arrow">${arrowIcon()}</span>
     </button>`;
   }).join("\n");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择 Lark Bot</title>
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>选择 Bot</title>
     <style>${oauthPageStyles()}</style></head><body><main class="panel">
       <div class="brand"><span class="brand-mark">${sparkIcon()}</span><span>COUNSO <em>LARK MCP</em></span></div>
-      <div class="eyebrow">ORGANIZATION VERIFIED</div><h1>选择要添加到 MCP 的 Lark Bot</h1>
-      <p class="subtitle"><span class="org-pill">${buildingIcon()} ${htmlEscape(organization.name)}</span> 选择一个 Bot 继续。</p>
+      <div class="eyebrow">ORGANIZATION VERIFIED</div><h1>选择要添加到 MCP 的 Bot</h1>
+      <p class="subtitle"><span class="org-pill">${buildingIcon()} ${htmlEscape(organization.platform_label)} · ${htmlEscape(organization.name)}</span> 选择一个 Bot 继续。</p>
       <form method="post" action="/oauth/lark/select"><input type="hidden" name="selection_token" value="${htmlEscape(selectionToken)}"><div class="choices">${rows || '<div class="empty">该组织还没有配置 Bot。</div>'}</div></form>
       <footer>Protected by COUNSO Lark MCP</footer>
     </main></body></html>`;
@@ -488,19 +553,20 @@ function arrowIcon() {
 }
 
 function oauthPageStyles() {
-  return `:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f5f9ff;color:#10233f;font:15px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background-image:linear-gradient(rgba(40,112,214,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(40,112,214,.045) 1px,transparent 1px);background-size:32px 32px;display:flex;align-items:center;justify-content:center;padding:28px}.panel{width:min(100%,650px);background:rgba(255,255,255,.94);border:1px solid #dce9f8;border-radius:24px;padding:34px 36px 24px;box-shadow:0 24px 70px rgba(28,82,145,.14)}.brand{display:flex;align-items:center;gap:10px;color:#1264c7;font-size:13px;font-weight:800;letter-spacing:.12em}.brand em{color:#8aa2bf;font-style:normal;font-size:10px;letter-spacing:.1em;margin-left:4px}.brand-mark{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#1677e8,#49b7ff);box-shadow:0 7px 18px rgba(24,117,224,.25)}svg{width:20px;height:20px}.brand-mark svg{width:17px}.eyebrow{margin-top:48px;color:#4e91da;font-size:11px;font-weight:800;letter-spacing:.18em}h1{margin:8px 0 10px;font-size:29px;line-height:1.2;letter-spacing:-.03em;color:#102b50}.subtitle{margin:0 0 24px;color:#6d819b}.search{height:48px;display:flex;align-items:center;gap:10px;padding:0 15px;border:1px solid #d6e5f6;border-radius:13px;background:#f8fbff;color:#7aa3cf;transition:.2s}.search:focus-within{border-color:#50a4ef;box-shadow:0 0 0 4px rgba(54,145,232,.1);background:#fff}.search svg{width:19px}.search input{width:100%;border:0;outline:0;background:transparent;color:#193554;font-size:15px}.search input::placeholder{color:#9aafc7}.choices{display:grid;gap:10px;margin-top:16px}.choice-card{width:100%;display:flex;align-items:center;gap:14px;padding:15px 16px;border:1px solid #dfebf8;border-radius:15px;background:#fff;color:#183454;text-align:left;cursor:pointer;transition:transform .18s,box-shadow .18s,border-color .18s}.choice-card:hover{transform:translateY(-2px);border-color:#80b9ed;box-shadow:0 10px 24px rgba(42,112,184,.12)}.choice-icon{flex:0 0 42px;width:42px;height:42px;display:grid;place-items:center;border-radius:12px;color:#1976d2;background:#eaf4ff}.bot-icon{color:#725ce6;background:#f0edff}.choice-copy{min-width:0;display:flex;flex-direction:column;gap:2px}.choice-copy strong{font-size:15px;color:#183454}.choice-copy small{color:#8295ab;font-size:12px}.choice-arrow{margin-left:auto;color:#78a6d2}.choice-arrow svg{width:19px}.org-pill{display:inline-flex;align-items:center;gap:6px;color:#2877c5;background:#eef7ff;border:1px solid #d8ebfc;border-radius:999px;padding:5px 10px;font-size:13px}.org-pill svg{width:16px}.empty{padding:24px;text-align:center;border:1px dashed #cddff2;border-radius:14px;color:#8295ab;background:#fafdff}.hidden{display:none!important}footer{margin-top:28px;color:#a1b2c5;font-size:11px;letter-spacing:.05em;text-align:center}@media(max-width:560px){body{padding:14px}.panel{padding:26px 20px 20px;border-radius:18px}.eyebrow{margin-top:34px}h1{font-size:25px}}`;
+  return `:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f5f9ff;color:#10233f;font:15px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background-image:linear-gradient(rgba(40,112,214,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(40,112,214,.045) 1px,transparent 1px);background-size:32px 32px;display:flex;align-items:center;justify-content:center;padding:28px}.panel{width:min(100%,650px);background:rgba(255,255,255,.94);border:1px solid #dce9f8;border-radius:24px;padding:34px 36px 24px;box-shadow:0 24px 70px rgba(28,82,145,.14)}.brand{display:flex;align-items:center;gap:10px;color:#1264c7;font-size:13px;font-weight:800;letter-spacing:.12em}.brand em{color:#8aa2bf;font-style:normal;font-size:10px;letter-spacing:.1em;margin-left:4px}.brand-mark{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:#fff;background:linear-gradient(135deg,#1677e8,#49b7ff);box-shadow:0 7px 18px rgba(24,117,224,.25)}svg{width:20px;height:20px}.brand-mark svg{width:17px}.eyebrow{margin-top:48px;color:#4e91da;font-size:11px;font-weight:800;letter-spacing:.18em}h1{margin:8px 0 10px;font-size:29px;line-height:1.2;letter-spacing:-.03em;color:#102b50}.subtitle{margin:0 0 20px;color:#6d819b}.platform-tabs{display:flex;gap:8px;padding:4px;margin-bottom:16px;border:1px solid #dce9f8;border-radius:14px;background:#f5f9ff}.platform-tab{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;height:42px;border:0;border-radius:10px;background:transparent;color:#7c91aa;font-weight:700;cursor:pointer;transition:.2s}.platform-tab.active{background:#fff;color:#1767c7;box-shadow:0 4px 12px rgba(44,105,175,.12)}.platform-mark{display:grid;place-items:center;width:23px;height:23px;border-radius:7px;color:#fff;font-size:12px;font-weight:800}.platform-lark{background:linear-gradient(135deg,#16a5ec,#3969ef)}.platform-feishu{background:linear-gradient(135deg,#19c4a3,#1675ea)}.search{height:48px;display:flex;align-items:center;gap:10px;padding:0 15px;border:1px solid #d6e5f6;border-radius:13px;background:#f8fbff;color:#7aa3cf;transition:.2s}.search:focus-within{border-color:#50a4ef;box-shadow:0 0 0 4px rgba(54,145,232,.1);background:#fff}.search svg{width:19px}.search input{width:100%;border:0;outline:0;background:transparent;color:#193554;font-size:15px}.search input::placeholder{color:#9aafc7}.choices{display:grid;gap:10px;margin-top:16px}.choice-card{width:100%;display:flex;align-items:center;gap:14px;padding:15px 16px;border:1px solid #dfebf8;border-radius:15px;background:#fff;color:#183454;text-align:left;cursor:pointer;transition:transform .18s,box-shadow .18s,border-color .18s}.choice-card:hover{transform:translateY(-2px);border-color:#80b9ed;box-shadow:0 10px 24px rgba(42,112,184,.12)}.choice-icon{flex:0 0 42px;width:42px;height:42px;display:grid;place-items:center;border-radius:12px;color:#1976d2;background:#eaf4ff}.bot-icon{color:#725ce6;background:#f0edff}.choice-copy{min-width:0;display:flex;flex-direction:column;gap:2px}.choice-copy strong{font-size:15px;color:#183454}.choice-copy small{color:#8295ab;font-size:12px}.choice-arrow{margin-left:auto;color:#78a6d2}.choice-arrow svg{width:19px}.org-pill{display:inline-flex;align-items:center;gap:6px;color:#2877c5;background:#eef7ff;border:1px solid #d8ebfc;border-radius:999px;padding:5px 10px;font-size:13px}.org-pill svg{width:16px}.empty{padding:24px;text-align:center;border:1px dashed #cddff2;border-radius:14px;color:#8295ab;background:#fafdff}.hidden{display:none!important}footer{margin-top:28px;color:#a1b2c5;font-size:11px;letter-spacing:.05em;text-align:center}@media(max-width:560px){body{padding:14px}.panel{padding:26px 20px 20px;border-radius:18px}.eyebrow{margin-top:34px}h1{font-size:25px}}`;
 }
 
 function createLarkOAuthUrl({ state, userId = "", botId = "" }) {
   const bot = getBot(botId);
+  const provider = getProvider(bot.platform ?? "lark");
   const query = new URLSearchParams({
     app_id: bot.appId,
-    redirect_uri: oauthRedirectUri,
+    redirect_uri: provider.oauthRedirectUri,
     state,
-    scope: oauthScopes,
+    scope: provider.oauthScopes,
   });
   if (userId) query.set("login_hint", userId);
-  return `${baseUrl}/open-apis/authen/v1/authorize?${query}`;
+  return `${provider.oauthBaseUrl}/open-apis/authen/v1/authorize?${query}`;
 }
 
 function escapeXmlText(value) {
@@ -515,7 +581,8 @@ function escapeXmlText(value) {
 
 async function larkGet(path, connectionId = "", identity = "bot") {
   const token = await getAccessToken(connectionId, identity);
-  const response = await fetch(`${baseUrl}${path}`, {
+  const provider = getConnectionProvider(connectionId);
+  const response = await fetch(`${provider.apiBaseUrl}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   return parseJson(response);
@@ -523,7 +590,8 @@ async function larkGet(path, connectionId = "", identity = "bot") {
 
 async function larkRequest(path, method, body, connectionId = "", identity = "bot") {
   const token = await getAccessToken(connectionId, identity);
-  const response = await fetch(`${baseUrl}${path}`, {
+  const provider = getConnectionProvider(connectionId);
+  const response = await fetch(`${provider.apiBaseUrl}${path}`, {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -536,7 +604,8 @@ async function larkRequest(path, method, body, connectionId = "", identity = "bo
 
 async function larkGetBuffer(path, connectionId = "", identity = "bot") {
   const token = await getAccessToken(connectionId, identity);
-  const response = await fetch(`${baseUrl}${path}`, {
+  const provider = getConnectionProvider(connectionId);
+  const response = await fetch(`${provider.apiBaseUrl}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) {
@@ -589,7 +658,7 @@ async function readWikiDocument(input, connectionId = "") {
     source_url:
       input.startsWith("http://") || input.startsWith("https://")
         ? input
-        : `https://${new URL(baseUrl).hostname}/wiki/${node.node_token}`,
+        : `${getConnectionWebBaseUrl(connectionId)}/wiki/${node.node_token}`,
     content: contentBody.data.content,
     updated_at: node.obj_edit_time,
   };
@@ -634,7 +703,7 @@ async function listAllWikiDocuments(spaces, maxNodes = 200, connectionId = "") {
           title: node.title ?? node.obj_title ?? node.node_token,
           document_token: node.obj_token ?? null,
           document_type: node.obj_type ?? null,
-          source_url: `https://${new URL(baseUrl).hostname}/wiki/${node.node_token}`,
+          source_url: `${getConnectionWebBaseUrl(connectionId)}/wiki/${node.node_token}`,
           document_origin: "wiki_node",
           belongs_to_wiki: true,
           wiki_space_id: current.space.space_id,
@@ -679,7 +748,7 @@ async function readLarkDocument(input, connectionId = "", identity = "bot") {
     source_url:
       input.startsWith("http://") || input.startsWith("https://")
         ? input
-        : `https://${new URL(baseUrl).hostname}/docx/${token}`,
+        : `${getConnectionWebBaseUrl(connectionId)}/docx/${token}`,
     content: body.data.content,
   };
 }
@@ -745,7 +814,7 @@ async function listAllDriveFiles(folderToken = "", maxFiles = 2000, connectionId
       for (const file of page.files ?? []) {
         const item = {
           ...file,
-          source_url: `https://${new URL(baseUrl).hostname}/drive/file/${file.token}`,
+          source_url: `${getConnectionWebBaseUrl(connectionId)}/drive/file/${file.token}`,
           folder_token: current.token || null,
           folder_path: current.path,
           summary: metadataSummary(file),
@@ -802,7 +871,7 @@ async function readLarkFile(fileToken, fileName = "", mimeType = "", metadata = 
       file_name: name,
       format: "pdf",
       pages: parsed.numpages,
-      source_url: metadata.source_url ?? `https://${new URL(baseUrl).hostname}/drive/file/${fileToken}`,
+      source_url: metadata.source_url ?? `${getConnectionWebBaseUrl(connectionId)}/drive/file/${fileToken}`,
       ...metadata,
       content: parsed.text,
     };
@@ -813,7 +882,7 @@ async function readLarkFile(fileToken, fileName = "", mimeType = "", metadata = 
       file_token: fileToken,
       file_name: name,
       format: extension || "docx",
-      source_url: metadata.source_url ?? `https://${new URL(baseUrl).hostname}/drive/file/${fileToken}`,
+      source_url: metadata.source_url ?? `${getConnectionWebBaseUrl(connectionId)}/drive/file/${fileToken}`,
       ...metadata,
       content: parsed.value,
     };
@@ -822,7 +891,7 @@ async function readLarkFile(fileToken, fileName = "", mimeType = "", metadata = 
     return {
       file_token: fileToken,
       ...parseSpreadsheet(buffer, name),
-      source_url: metadata.source_url ?? `https://${new URL(baseUrl).hostname}/drive/file/${fileToken}`,
+      source_url: metadata.source_url ?? `${getConnectionWebBaseUrl(connectionId)}/drive/file/${fileToken}`,
       ...metadata,
     };
   }
@@ -831,7 +900,7 @@ async function readLarkFile(fileToken, fileName = "", mimeType = "", metadata = 
       file_token: fileToken,
       file_name: name,
       format: extension || "text",
-      source_url: metadata.source_url ?? `https://${new URL(baseUrl).hostname}/drive/file/${fileToken}`,
+      source_url: metadata.source_url ?? `${getConnectionWebBaseUrl(connectionId)}/drive/file/${fileToken}`,
       ...metadata,
       content: buffer.toString("utf8"),
     };
@@ -842,7 +911,7 @@ async function readLarkFile(fileToken, fileName = "", mimeType = "", metadata = 
     file_name: name,
     mime_type: mimeType || "unknown",
     format: "unsupported",
-    source_url: metadata.source_url ?? `https://${new URL(baseUrl).hostname}/drive/file/${fileToken}`,
+    source_url: metadata.source_url ?? `${getConnectionWebBaseUrl(connectionId)}/drive/file/${fileToken}`,
     ...metadata,
     content: "该文件已下载，但当前版本暂不支持提取其文本内容。",
   };
@@ -1237,7 +1306,7 @@ async function updateLarkDocument(documentToken, { command, content, blockId = "
     command,
     block_id: blockId || null,
     result: body.data ?? body,
-    source_url: `https://${new URL(baseUrl).hostname}/docx/${documentToken}`,
+    source_url: `${getConnectionWebBaseUrl(connectionId)}/docx/${documentToken}`,
   };
 }
 
@@ -1277,10 +1346,10 @@ async function createLarkDocument({ title, content, folderToken = "", folderName
   const result = {
     document_id: document.document_id,
     title: document.title ?? title,
-    url: document.url ?? `https://${new URL(baseUrl).hostname}/docx/${document.document_id}`,
+    url: document.url ?? `${getConnectionWebBaseUrl(connectionId)}/docx/${document.document_id}`,
     folder_token: effectiveFolderToken || null,
     folder_url: effectiveFolderToken
-      ? `https://${new URL(baseUrl).hostname}/drive/folder/${effectiveFolderToken}`
+      ? `${getConnectionWebBaseUrl(connectionId)}/drive/folder/${effectiveFolderToken}`
       : null,
     storage_scope: effectiveFolderToken
       ? storageTarget === "default_public_folder" ? "configured_public_folder" : storageTarget
@@ -1364,15 +1433,15 @@ function createServer() {
       const connection = getConnection(resolvedConnectionId);
       const bot = getBot(bot_id);
       const authorizedBot = getBot(connection.oauthBotId);
-      if (bot.appId !== authorizedBot.appId) {
+      if (bot.platform !== authorizedBot.platform || bot.appId !== authorizedBot.appId) {
         return {
           isError: true,
-          content: [{ type: "text", text: "该 Bot 属于另一个 OAuth 应用，请使用 bot_id 重新发起 OAuth 授权后再选择。" }],
+          content: [{ type: "text", text: "该 Bot 属于另一个平台或 OAuth 应用，请使用 bot_id 重新发起 OAuth 授权后再选择。" }],
         };
       }
       connection.selectedBotId = bot.id;
       return {
-        content: [{ type: "text", text: JSON.stringify({ selected_bot: publicBot(bot), message: `已选择 Lark Bot：${bot.name}` }, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify({ selected_bot: publicBot(bot), message: `已选择 ${getProvider(bot.platform).label} Bot：${bot.name}` }, null, 2) }],
         structuredContent: { selected_bot: publicBot(bot) },
       };
     },
@@ -1463,7 +1532,7 @@ function createServer() {
           text: JSON.stringify({
             ok: true,
             authentication: "oauth_required",
-            oauth_redirect_uri: oauthRedirectUri,
+            oauth_redirect_uris: Object.fromEntries(Object.values(providers).map((provider) => [provider.id, provider.oauthRedirectUri])),
             message: "Lark tools require member OAuth first. After member verification, file APIs use the enterprise application's approved permissions and document access scope.",
           }, null, 2),
         }],
@@ -1910,13 +1979,16 @@ const httpServer = http.createServer(async (req, res) => {
         const id = String(body.id ?? crypto.randomUUID());
         const appId = String(body.app_id ?? body.appId ?? "").trim();
         const appSecret = String(body.app_secret ?? body.appSecret ?? "").trim();
+        const platform = String(body.platform ?? "lark").trim().toLowerCase();
         const name = String(body.name ?? appId).trim();
         const organizationId = String(body.organization_id ?? body.organizationId ?? "").trim();
         const organizationName = String(body.organization_name ?? body.organizationName ?? organizationId).trim();
         const tenantKey = String(body.tenant_key ?? body.tenantKey ?? "").trim();
-        if (!appId || !appSecret || !name || !organizationId || !tenantKey) throw new Error("id, name, organization_id, tenant_key, app_id and app_secret are required");
+        if (!providers[platform]) throw new Error("platform must be lark or feishu");
+        if (!appId || !appSecret || !name || !organizationId || !tenantKey) throw new Error("id, name, platform, organization_id, tenant_key, app_id and app_secret are required");
         const bot = saveManagedBot({
           id,
+          platform,
           name,
           appId,
           appSecret,
@@ -1952,7 +2024,7 @@ const httpServer = http.createServer(async (req, res) => {
       const selection = botSelectionStates.get(body.selection_token ?? "");
       const bot = getBot(body.bot_id ?? "");
       if (!selection || selection.expiresAt < Date.now()) throw new Error("Invalid or expired Bot selection");
-      if (bot.organizationId !== selection.organization.id) throw new Error("The selected Bot does not belong to the selected organization");
+      if (bot.organizationId !== selection.organization.id || bot.platform !== selection.organization.platform) throw new Error("The selected Bot does not belong to the selected organization or platform");
       botSelectionStates.delete(body.selection_token ?? "");
       if (bot.id === selection.authorizedBotId) {
         const token = selection.bootstrapToken;
@@ -2007,21 +2079,24 @@ const httpServer = http.createServer(async (req, res) => {
     try {
       const body = parseFormBody(req, await readRequestBody(req));
       const selection = organizationSelectionStates.get(body.selection_token ?? "");
+      const requestedOrganizationKey = `${String(body.platform ?? "lark").toLowerCase()}:${body.organization_id ?? ""}`;
       if (selection?.redirectLocation &&
-          selection.selectedOrganizationId === body.organization_id &&
+          selection.selectedOrganizationId === requestedOrganizationKey &&
           selection.oauthState && oauthStates.has(selection.oauthState)) {
         // Browsers or OAuth clients may retry a form POST after a 302. Reuse
         // the original redirect only when they resubmit the same organization.
         redirect(res, selection.redirectLocation);
         return;
       }
-      const organization = organizationsFromRegistry().find((item) => item.id === body.organization_id);
+      const platform = String(body.platform ?? "lark").toLowerCase();
+      const organization = organizationsFromRegistry().find((item) => item.id === body.organization_id && item.platform === platform);
       if (!selection || selection.expiresAt < Date.now()) throw new Error("Invalid or expired organization selection");
       if (!organization) throw new Error("Organization not found");
       const bootstraps = organization.bots.filter((bot) => bot.bootstrap);
       if (bootstraps.length !== 1) throw new Error("The selected organization must have exactly one bootstrap Bot");
       const bootstrap = bootstraps[0];
-      if (selection.oauthState && selection.selectedOrganizationId !== body.organization_id) {
+      const organizationSelectionKey = `${organization.platform}:${organization.id}`;
+      if (selection.oauthState && selection.selectedOrganizationId !== organizationSelectionKey) {
         oauthStates.delete(selection.oauthState);
       }
       const state = crypto.randomBytes(24).toString("hex");
@@ -2033,7 +2108,7 @@ const httpServer = http.createServer(async (req, res) => {
         expectedTenantKey: organization.bots.find((bot) => bot.tenantKey)?.tenantKey ?? "",
         createdAt: Date.now(),
       });
-      selection.selectedOrganizationId = body.organization_id;
+      selection.selectedOrganizationId = organizationSelectionKey;
       selection.oauthState = state;
       selection.redirectLocation = createLarkOAuthUrl({ state, botId: bootstrap.id });
       redirect(res, selection.redirectLocation);
@@ -2117,7 +2192,7 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  if (requestUrl.pathname === "/oauth/lark/start") {
+  if (requestUrl.pathname === "/oauth/lark/start" || requestUrl.pathname === "/oauth/feishu/start") {
     let botId;
     try {
       botId = getBot(requestUrl.searchParams.get("bot_id") ?? "").id;
@@ -2142,7 +2217,7 @@ const httpServer = http.createServer(async (req, res) => {
     return;
   }
 
-  if (requestUrl.pathname === "/oauth/lark/callback") {
+  if (requestUrl.pathname === "/oauth/lark/callback" || requestUrl.pathname === "/oauth/feishu/callback") {
     const state = requestUrl.searchParams.get("state") ?? "";
     const pending = oauthStates.get(state);
     oauthStates.delete(state);
@@ -2160,14 +2235,14 @@ const httpServer = http.createServer(async (req, res) => {
       const oauthBot = getBot(pending.botId ?? "");
       const tokenBody = await exchangeAuthorizationCode(requestUrl.searchParams.get("code") ?? "", oauthBot);
       const token = tokenBody.data ?? tokenBody;
-      const user = await getLarkUserInfo(token.access_token);
+      const user = await getLarkUserInfo(token.access_token, oauthBot);
       const userTenantKey = user.tenant_key ?? user.tenantKey ?? token.tenant_key ?? tokenBody.tenant_key ?? "";
       if (pending.expectedTenantKey && userTenantKey && pending.expectedTenantKey !== userTenantKey) {
         throw new Error("The Lark user is not a member of the selected organization");
       }
       if (pending.stage === "organization_bootstrap") {
         const organization = pending.organization;
-        const bots = botRegistry.filter((bot) => bot.organizationId === organization.id);
+        const bots = botRegistry.filter((bot) => bot.organizationId === organization.id && bot.platform === organization.platform);
         if (bots.length === 0) throw new Error("No Bot is configured for the selected organization");
         const selectionToken = randomToken();
         botSelectionStates.set(selectionToken, {

@@ -1,6 +1,6 @@
-# COUNSO Lark MCP
+# COUNSO Lark / 飞书 MCP
 
-This service exposes Lark knowledge-base and file access to COUNSO through MCP. Every Lark data operation requires a member OAuth connection; writing is additionally restricted to creating a new document after explicit confirmation.
+This service exposes Lark and Feishu knowledge-base and file access to COUNSO through MCP. Every data operation requires a member OAuth connection; writing is additionally restricted to creating a new document after explicit confirmation.
 
 ## Local test
 
@@ -9,7 +9,7 @@ This service exposes Lark knowledge-base and file access to COUNSO through MCP. 
 3. Start the server: `npm start`.
 4. Configure COUNSO with `http://localhost:4020/mcp` when COUNSO can reach the same machine.
 
-## Lark OAuth connection
+## Lark / 飞书 OAuth connection
 
 For the PDF's per-member connection model, configure the Lark app's OAuth redirect URL to:
 
@@ -17,9 +17,9 @@ For the PDF's per-member connection model, configure the Lark app's OAuth redire
 
 Start a member connection at `/oauth/lark/start?user_id=<COUNSO_USER_ID>`. The callback returns a `connection_id`; COUNSO must attach that ID to every Lark tool call. The service keeps the user token server-side and never returns it to the client.
 
-The service supports a public multi-organization OAuth flow without requiring a Lark ISV App. The user first selects an organization from the server-managed list; the service uses that organization's bootstrap Bot for OAuth, verifies the returned `tenant_key`, and then lets the user select another registered Bot in that organization. Bot credentials can be managed dynamically through the authenticated `/admin/lark-bots` API. See [the administrator guide](docs/lark-mcp-admin-guide.md).
+The service supports a public multi-organization OAuth flow without requiring a Lark or Feishu ISV App. The user first selects Lark or Feishu, then selects an organization from that platform's server-managed list. The service uses that organization's bootstrap Bot for the matching platform OAuth, verifies the returned `tenant_key`, and then lets the user select another registered Bot in that organization. Bot credentials can be managed dynamically through the authenticated `/admin/lark-bots` API. See [the administrator guide](docs/lark-mcp-admin-guide.md).
 
-If `LARK_BOTS_JSON` is not set, the existing `LARK_APP_ID` and `LARK_APP_SECRET` configuration remains available as a legacy single-Bot fallback. For multiple organizations, register Bots with `organization_id`, `organization_name`, and `tenant_key` through the admin API. `LARK_BOT_STORE_KEY` encrypts dynamically managed Bot secrets at rest; it is the only key that must remain stable across restarts. Users do not need to know or enter any App ID or Secret.
+If `LARK_BOTS_JSON` is not set, the existing `LARK_APP_ID` and `LARK_APP_SECRET` configuration remains available as a legacy single-Bot fallback. For multiple organizations, register Bots with `platform`, `organization_id`, `organization_name`, and `tenant_key` through the admin API. `LARK_BOT_STORE_KEY` encrypts dynamically managed Bot secrets at rest; it is the only key that must remain stable across restarts. Users do not need to know or enter any App ID or Secret.
 
 For production, use an HTTPS redirect URL and move the connection store from memory to a persistent encrypted store. Restarting this local process clears active OAuth connections.
 
@@ -37,6 +37,7 @@ When deploying behind an HTTPS reverse proxy, set the public URL in the server e
 PORT=4020
 PUBLIC_BASE_URL=https://lark-mcp-test.zkid.xyz
 LARK_OAUTH_REDIRECT_URI=https://lark-mcp-test.zkid.xyz/oauth/lark/callback
+FEISHU_OAUTH_REDIRECT_URI=https://lark-mcp-test.zkid.xyz/oauth/feishu/callback
 MCP_OAUTH_ISSUER=https://lark-mcp-test.zkid.xyz
 MCP_RESOURCE=https://lark-mcp-test.zkid.xyz/mcp
 ```
@@ -45,7 +46,7 @@ The MCP endpoint for COUNSO is then:
 
 `https://lark-mcp-test.zkid.xyz/mcp`
 
-The exact `LARK_OAUTH_REDIRECT_URI` must also be added to the Lark application's OAuth redirect URL list. The public URL must terminate TLS before forwarding requests to this Node process; the Node process itself listens on `PORT`.
+The exact Lark and Feishu OAuth redirect URIs must each be added to the corresponding application's OAuth redirect URL list. The public URL must terminate TLS before forwarding requests to this Node process; the Node process itself listens on `PORT`.
 
 Available tools:
 
