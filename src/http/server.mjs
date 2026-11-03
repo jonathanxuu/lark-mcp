@@ -1,0 +1,84 @@
+import http from "node:http";
+import { URL } from "node:url";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { adminToken, port, publicBaseUrl } from "../config/index.mjs";
+import { json, parseFormBody, readRequestBody, redirect } from "./response.mjs";
+import { mcpOAuthMetadata } from "../oauth/metadata.mjs";
+import { handleAdminBotRoutes } from "./routes/admin-routes.mjs";
+import { handleOAuthStatusRoute } from "./routes/oauth-status-route.mjs";
+import { handleOAuthDiscoveryRoutes } from "./routes/oauth-discovery-routes.mjs";
+import { createOAuthRoutes } from "./routes/oauth-routes.mjs";
+
+function issuerForRequest(requestUrl) {
+  return process.env.MCP_OAUTH_ISSUER ?? publicBaseUrl ?? `http://${requestUrl.host}`;
+}
+
+export function createHttpServer({
+  createMcpServer,
+  getBotRegistry,
+  providers,
+  publicBot,
+  saveManagedBot,
+  removeManagedBot,
+  getBot,
+  getConnectionBot,
+  mcpClients,
+  mcpAccessTokens,
+  mcpAuthorizationCodes,
+  oauthStates,
+  organizationSelectionStates,
+  botSelectionStates,
+  userConnections,
+  organizationsFromRegistry,
+  createOAuthUrl,
+  exchangeAuthorizationCode,
+  getLarkUserInfo,
+  renderOrganizationSelectionPage,
+  renderBotSelectionPage,
+  mcpConnectionContext,
+  randomToken,
+  pkceChallenge,
+  crypto,
+}) {
+  return http.createServer(async (req, res) => {
+    const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    console.log(`[HTTP] ${req.method} ${requestUrl.pathname}`);
+
+    if (await handleOAuthDiscoveryRoutes({ req, res, requestUrl, mcpIssuerForRequest: issuerForRequest, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients })) return;
+    if (await handleAdminBotRoutes({ req, res, requestUrl, adminToken, botRegistry: getBotRegistry(), providers, publicBot, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, crypto })) return;
+    if (await createOAuthRoutes({
+      crypto, req, res, requestUrl, getBotRegistry, botSelectionStates, mcpAccessTokens,
+      mcpAuthorizationCodes, mcpClients, oauthStates, organizationSelectionStates,
+      userConnections, getBot, publicBot, organizationsFromRegistry, createOAuthUrl,
+      exchangeAuthorizationCode, getLarkUserInfo, renderOrganizationSelectionPage,
+      renderBotSelectionPage, json, parseFormBody, readRequestBody, redirect, randomToken,
+      pkceChallenge,
+    })()) return;
+    if (handleOAuthStatusRoute({ requestUrl, userConnections, getConnectionBot, botRegistry: getBotRegistry(), publicBot, res })) return;
+
+    if (requestUrl.pathname !== "/mcp") {
+      json(res, requestUrl.pathname === "/health" ? 200 : 404, { ok: requestUrl.pathname === "/health" });
+      return;
+    }
+    const authorization = req.headers.authorization ?? "";
+    const accessToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+    const token = accessToken ? mcpAccessTokens.get(accessToken) : null;
+    if (!token || token.refresh === true || token.expiresAt < Date.now()) {
+      const issuer = issuerForRequest(requestUrl);
+      res.writeHead(401, { "Content-Type": "application/json; charset=utf-8", "WWW-Authenticate": `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"` });
+      res.end(JSON.stringify({ error: "unauthorized", error_description: "Lark member OAuth is required" }));
+      return;
+    }
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const server = createMcpServer();
+    res.on("close", () => transport.close().catch(() => {}));
+    await mcpConnectionContext.run(token.connectionId, async () => {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    });
+  });
+}
+
+export function startHttpServer(server) {
+  server.listen(port, () => console.log(`COUNSO Lark MCP listening on http://localhost:${port}/mcp`));
+}
