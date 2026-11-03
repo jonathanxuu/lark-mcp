@@ -182,7 +182,7 @@ const { appendDocument: appendToLarkDocument, grantEditAccess: grantDocumentEdit
 const { ensureDefaultOutputFolder, listAllDriveFiles, listDriveFiles, resolveUserFolderToken } = createDriveService({ larkGet, larkRequest, getConnectionBot, getConnectionWebBaseUrl, defaultOutputFolderName, metadataSummary });
 const { readLarkFile } = createFileService({ larkGetBuffer, extensionFor, parseSpreadsheet, mammoth, pdfParse, getConnectionWebBaseUrl });
 
-const { searchDriveFileNames, searchLarkDocuments, searchWikiTitles } = createSearchService({ listWikiSpaces, listWikiNodes, listDriveFiles, larkGet, getConnectionWebBaseUrl });
+const { searchDriveFileNames, searchLarkDocuments, searchWikiTitles } = createSearchService({ listWikiSpaces, listWikiNodes, listDriveFiles, larkRequest, getConnectionWebBaseUrl });
 const { inventoryLarkDocuments } = createInventoryService({ searchLarkDocuments, listWikiSpaces, listAllWikiDocuments, listAllDriveFiles, enrichDocumentPermissions, readLarkDocument, readLarkFile, getConnectionWebBaseUrl });
 function driveTokenFromInput(input) {
   if (input.startsWith("http://") || input.startsWith("https://")) {

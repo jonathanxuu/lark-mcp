@@ -1,5 +1,5 @@
 export function createSearchService(dependencies) {
-  const { listWikiSpaces, listWikiNodes, listDriveFiles, larkGet, getConnectionWebBaseUrl } = dependencies;
+  const { listWikiSpaces, listWikiNodes, listDriveFiles, larkRequest, getConnectionWebBaseUrl } = dependencies;
   async function searchWikiTitles(query, maxResults = 20, maxNodes = 500, connectionId = "") {
   const spaces = await listWikiSpaces("", 50, connectionId);
   const results = [];
