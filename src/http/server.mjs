@@ -4,13 +4,24 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { adminToken, port, publicBaseUrl } from "../config/index.mjs";
 import { json, parseFormBody, readRequestBody, redirect } from "./response.mjs";
 import { mcpOAuthMetadata } from "../oauth/metadata.mjs";
-import { handleAdminBotRoutes } from "./routes/admin-routes.mjs";
 import { handleOAuthStatusRoute } from "./routes/oauth-status-route.mjs";
 import { handleOAuthDiscoveryRoutes } from "./routes/oauth-discovery-routes.mjs";
 import { createOAuthRoutes } from "./routes/oauth-routes.mjs";
 
 function issuerForRequest(requestUrl) {
   return process.env.MCP_OAUTH_ISSUER ?? publicBaseUrl ?? `http://${requestUrl.host}`;
+}
+
+function platformRoute(requestUrl) {
+  for (const platform of ["lark", "feishu"]) {
+    const prefix = `/${platform}`;
+    if (requestUrl.pathname === prefix || requestUrl.pathname.startsWith(`${prefix}/`)) {
+      const routeUrl = new URL(requestUrl);
+      routeUrl.pathname = routeUrl.pathname.slice(prefix.length) || "/";
+      return { platform, routeUrl, issuer: `${issuerForRequest(requestUrl)}/${platform}` };
+    }
+  }
+  return { platform: "lark", routeUrl: requestUrl, issuer: issuerForRequest(requestUrl) };
 }
 
 export function createHttpServer({
@@ -26,15 +37,11 @@ export function createHttpServer({
   mcpAccessTokens,
   mcpAuthorizationCodes,
   oauthStates,
-  organizationSelectionStates,
-  botSelectionStates,
   userConnections,
-  organizationsFromRegistry,
+  resolveClientConfig,
   createOAuthUrl,
   exchangeAuthorizationCode,
   getLarkUserInfo,
-  renderOrganizationSelectionPage,
-  renderBotSelectionPage,
   mcpConnectionContext,
   randomToken,
   pkceChallenge,
@@ -42,29 +49,28 @@ export function createHttpServer({
 }) {
   return http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const { platform, routeUrl, issuer } = platformRoute(requestUrl);
     console.log(`[HTTP] ${req.method} ${requestUrl.pathname}`);
 
-    if (await handleOAuthDiscoveryRoutes({ req, res, requestUrl, mcpIssuerForRequest: issuerForRequest, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients })) return;
-    if (await handleAdminBotRoutes({ req, res, requestUrl, adminToken, botRegistry: getBotRegistry(), providers, publicBot, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, crypto })) return;
+    if (await handleOAuthDiscoveryRoutes({ req, res, requestUrl: routeUrl, mcpIssuerForRequest: () => issuer, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients, resolveClientConfig })) return;
+    if (await handleAdminBotRoutes({ req, res, requestUrl: routeUrl, adminToken, botRegistry: getBotRegistry(), providers, publicBot, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, crypto })) return;
     if (await createOAuthRoutes({
-      crypto, req, res, requestUrl, getBotRegistry, botSelectionStates, mcpAccessTokens,
-      mcpAuthorizationCodes, mcpClients, oauthStates, organizationSelectionStates,
-      userConnections, getBot, publicBot, organizationsFromRegistry, createOAuthUrl,
-      exchangeAuthorizationCode, getLarkUserInfo, renderOrganizationSelectionPage,
-      renderBotSelectionPage, json, parseFormBody, readRequestBody, redirect, randomToken,
+      crypto, req, res, requestUrl: routeUrl, platform, mcpAccessTokens,
+      mcpAuthorizationCodes, oauthStates, userConnections, getBot, publicBot, createOAuthUrl,
+      resolveClientConfig,
+      exchangeAuthorizationCode, getLarkUserInfo, json, parseFormBody, readRequestBody, redirect, randomToken,
       pkceChallenge,
     })()) return;
-    if (handleOAuthStatusRoute({ requestUrl, userConnections, getConnectionBot, botRegistry: getBotRegistry(), publicBot, res })) return;
+    if (handleOAuthStatusRoute({ requestUrl: routeUrl, userConnections, getConnectionBot, botRegistry: getBotRegistry(), publicBot, res })) return;
 
-    if (requestUrl.pathname !== "/mcp") {
-      json(res, requestUrl.pathname === "/health" ? 200 : 404, { ok: requestUrl.pathname === "/health" });
+    if (routeUrl.pathname !== "/mcp") {
+      json(res, routeUrl.pathname === "/health" ? 200 : 404, { ok: routeUrl.pathname === "/health" });
       return;
     }
     const authorization = req.headers.authorization ?? "";
     const accessToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
     const token = accessToken ? mcpAccessTokens.get(accessToken) : null;
     if (!token || token.refresh === true || token.expiresAt < Date.now()) {
-      const issuer = issuerForRequest(requestUrl);
       res.writeHead(401, { "Content-Type": "application/json; charset=utf-8", "WWW-Authenticate": `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"` });
       res.end(JSON.stringify({ error: "unauthorized", error_description: "Lark member OAuth is required" }));
       return;
@@ -82,3 +88,4 @@ export function createHttpServer({
 export function startHttpServer(server) {
   server.listen(port, () => console.log(`COUNSO Lark MCP listening on http://localhost:${port}/mcp`));
 }
+import { handleAdminBotRoutes } from "./routes/admin-routes.mjs";

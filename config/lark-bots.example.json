@@ -1,0 +1,15 @@
+[
+  {
+    "platform": "lark",
+    "name": "Counso Lark 助手",
+    "app_id": "cli_xxx",
+    "app_secret": "仅保存在服务器文件中",
+    "tenant_key": "tenant_xxx",
+    "organization_name": "Counso",
+    "output_folder_token": "",
+    "redirect_uris": [
+      "https://your-counso-client.example/oauth/callback"
+    ],
+    "bootstrap": true
+  }
+]

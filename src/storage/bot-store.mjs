@@ -43,8 +43,15 @@ export function writeBotStore(botStorePath, bots) {
   fs.renameSync(tempPath, botStorePath);
 }
 
-export function loadStaticBotRegistry({ providers, getProvider }) {
-  const configured = process.env.LARK_BOTS_JSON?.trim();
+export function loadStaticBotRegistry({ providers, getProvider, staticBotConfigPath = "./config/lark-bots.json" }) {
+  let configured = process.env.LARK_BOTS_JSON?.trim();
+  if (!configured) {
+    try {
+      configured = fs.readFileSync(staticBotConfigPath, "utf8").trim();
+    } catch (error) {
+      if (error.code !== "ENOENT") throw new Error(`Cannot read static Lark Bot config: ${error.message}`);
+    }
+  }
   if (!configured) {
     if (!process.env.LARK_APP_ID || !process.env.LARK_APP_SECRET) return [];
     return [{ id: "default", platform: "lark", name: "COUNSO Lark 助手", appId: process.env.LARK_APP_ID, appSecret: process.env.LARK_APP_SECRET, outputFolderToken: providers.lark.defaultOutputFolderToken, description: "默认 Lark 应用" }];
@@ -57,16 +64,21 @@ export function loadStaticBotRegistry({ providers, getProvider }) {
     throw new Error(`LARK_BOTS_JSON is not valid JSON: ${error.message}`);
   }
   if (!Array.isArray(bots) || bots.length === 0) throw new Error("LARK_BOTS_JSON must be a non-empty array");
-  const normalized = bots.map((bot, index) => {
+  const normalized = bots.map((bot) => {
     const platform = String(bot.platform ?? "lark").toLowerCase();
     return {
-      id: String(bot.id ?? `bot-${index + 1}`),
+      id: String(bot.id ?? crypto.randomBytes(16).toString("hex")),
       platform,
       name: String(bot.name ?? bot.id ?? `Lark Bot ${index + 1}`),
       appId: bot.app_id ?? bot.appId,
       appSecret: bot.app_secret ?? bot.appSecret,
       outputFolderToken: bot.output_folder_token ?? bot.outputFolderToken ?? getProvider(platform).defaultOutputFolderToken,
       description: bot.description ?? "",
+      organizationId: bot.organization_id ?? bot.organizationId ?? "",
+      organizationName: bot.organization_name ?? bot.organizationName ?? "",
+      tenantKey: bot.tenant_key ?? bot.tenantKey ?? "",
+      bootstrap: bot.bootstrap === true,
+      redirectUris: Array.isArray(bot.redirect_uris) ? bot.redirect_uris : [],
     };
   });
   if (normalized.some((bot) => !bot.appId || !bot.appSecret)) throw new Error("Every LARK_BOTS_JSON entry requires app_id and app_secret");
@@ -75,8 +87,8 @@ export function loadStaticBotRegistry({ providers, getProvider }) {
   return normalized;
 }
 
-export function loadBotRegistry({ botStorePath, botStoreKey, providers, getProvider }) {
-  const staticBots = loadStaticBotRegistry({ providers, getProvider });
+export function loadBotRegistry({ botStorePath, botStoreKey, providers, getProvider, staticBotConfigPath }) {
+  const staticBots = loadStaticBotRegistry({ providers, getProvider, staticBotConfigPath });
   const storedBots = readBotStore(botStorePath).map((bot) => ({
     id: bot.id,
     platform: bot.platform ?? "lark",
@@ -89,6 +101,7 @@ export function loadBotRegistry({ botStorePath, botStoreKey, providers, getProvi
     organizationName: bot.organization_name ?? "",
     tenantKey: bot.tenant_key ?? "",
     bootstrap: bot.bootstrap === true,
+    redirectUris: Array.isArray(bot.redirect_uris) ? bot.redirect_uris : [],
     source: "store",
   }));
   const merged = new Map(staticBots.map((bot) => [bot.id, { ...bot, source: "env" }]));

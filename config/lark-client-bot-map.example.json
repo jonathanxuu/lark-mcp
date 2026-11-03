@@ -1,0 +1,10 @@
+{
+  "clients": {
+    "replace-with-counso-client-id": {
+      "bot_id": "lark-bot",
+      "redirect_uris": [
+        "https://your-counso-client.example/oauth/callback"
+      ]
+    }
+  }
+}
