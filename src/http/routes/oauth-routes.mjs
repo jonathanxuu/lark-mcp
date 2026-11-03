@@ -30,6 +30,7 @@ export function createOAuthRoutes({
       const codeChallenge = requestUrl.searchParams.get("code_challenge") ?? "";
       const registeredRedirectUris = mappedClient?.redirectUris ?? [];
       const redirectAllowed = registeredRedirectUris.includes(redirectUri) || (mappedClient && registeredRedirectUris.length === 0);
+      console.log(`[OAuth] authorize platform=${platform} client_id=${clientId} mapped=${Boolean(mappedClient)} redirect_allowed=${Boolean(redirectAllowed)}`);
       if (!mappedClient || !redirectAllowed || requestUrl.searchParams.get("response_type") !== "code" || requestUrl.searchParams.get("code_challenge_method") !== "S256" || !codeChallenge) {
         json(res, 400, { error: "invalid_client", error_description: "Client ID must match a configured Lark or Feishu Bot app_id and use an allowed redirect URI" });
         return true;
@@ -55,6 +56,7 @@ export function createOAuthRoutes({
     if (requestUrl.pathname === "/oauth/token" && req.method === "POST") {
       try {
         const body = parseFormBody(req, await readRequestBody(req));
+        console.log(`[OAuth] token grant=${body.grant_type ?? "authorization_code"} client_id=${body.client_id ?? ""}`);
         if (body.grant_type === "refresh_token") {
           const refresh = mcpAccessTokens.get(body.refresh_token);
           if (!refresh || refresh.refresh !== true) throw new Error("Invalid refresh token");
@@ -113,6 +115,7 @@ export function createOAuthRoutes({
           oauthBotId: oauthBot.id,
           selectedBotId: oauthBot.id,
         });
+        console.log(`[OAuth] connection created bot=${oauthBot.id} connection=${connectionId}`);
         if (pending.mcp) {
           const code = randomToken();
           mcpAuthorizationCodes.set(code, { connectionId, clientId: pending.mcp.clientId, redirectUri: pending.mcp.redirectUri, codeChallenge: pending.mcp.codeChallenge, expiresAt: Date.now() + 5 * 60 * 1000 });

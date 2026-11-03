@@ -85,6 +85,7 @@ export function createHttpServer({
     const authorization = req.headers.authorization ?? "";
     const accessToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
     const token = accessToken ? mcpAccessTokens.get(accessToken) : null;
+    console.log(`[MCP] bearer_present=${Boolean(accessToken)} token_valid=${Boolean(token && token.refresh !== true && token.expiresAt >= Date.now())} connection=${token?.connectionId ?? ""}`);
     if (!token || token.refresh === true || token.expiresAt < Date.now()) {
       res.writeHead(401, { "Content-Type": "application/json; charset=utf-8", "WWW-Authenticate": `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"` });
       res.end(JSON.stringify({ error: "unauthorized", error_description: "Lark member OAuth is required" }));
