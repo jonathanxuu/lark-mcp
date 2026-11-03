@@ -18,10 +18,10 @@ function platformRoute(requestUrl) {
     if (requestUrl.pathname === prefix || requestUrl.pathname.startsWith(`${prefix}/`)) {
       const routeUrl = new URL(requestUrl);
       routeUrl.pathname = routeUrl.pathname.slice(prefix.length) || "/";
-      return { platform, routeUrl, issuer: `${issuerForRequest(requestUrl)}/${platform}` };
+      return { platform, routeUrl, issuer: `${issuerForRequest(requestUrl)}/${platform}`, scoped: true };
     }
   }
-  return { platform: "lark", routeUrl: requestUrl, issuer: issuerForRequest(requestUrl) };
+  return { platform: "lark", routeUrl: requestUrl, issuer: issuerForRequest(requestUrl), scoped: false };
 }
 
 export function createHttpServer({
@@ -49,8 +49,23 @@ export function createHttpServer({
 }) {
   return http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    const { platform, routeUrl, issuer } = platformRoute(requestUrl);
+    const { platform, routeUrl, issuer, scoped } = platformRoute(requestUrl);
     console.log(`[HTTP] ${req.method} ${requestUrl.pathname}`);
+
+    const unscopedMcpRoute = requestUrl.pathname === "/mcp"
+      || requestUrl.pathname === "/oauth/authorize"
+      || requestUrl.pathname === "/oauth/token"
+      || requestUrl.pathname === "/oauth/register"
+      || requestUrl.pathname === "/.well-known/oauth-authorization-server"
+      || requestUrl.pathname === "/.well-known/oauth-protected-resource"
+      || requestUrl.pathname === "/.well-known/oauth-protected-resource/mcp";
+    if (!scoped && unscopedMcpRoute) {
+      json(res, 400, {
+        error: "platform_path_required",
+        error_description: "Use /lark/mcp or /feishu/mcp so the MCP server can identify the platform and Bot.",
+      });
+      return;
+    }
 
     if (await handleOAuthDiscoveryRoutes({ req, res, requestUrl: routeUrl, mcpIssuerForRequest: () => issuer, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients, resolveClientConfig })) return;
     if (await handleAdminBotRoutes({ req, res, requestUrl: routeUrl, adminToken, botRegistry: getBotRegistry(), providers, publicBot, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, crypto })) return;
