@@ -1,5 +1,18 @@
 export function createInventoryService(dependencies) {
-  const { searchLarkDocuments, listWikiSpaces, listAllWikiDocuments, listAllDriveFiles, enrichDocumentPermissions, readLarkDocument, readLarkFile, getConnectionWebBaseUrl } = dependencies;
+  const {
+    searchLarkDocuments,
+    listWikiSpaces,
+    listAllWikiDocuments,
+    listAllDriveFiles,
+    enrichDocumentPermissions,
+    readLarkDocument,
+    readLarkFile,
+    getConnectionBot,
+    getConnectionWebBaseUrl,
+    defaultOutputFolderName,
+    metadataSummary,
+    summarizeText,
+  } = dependencies;
   async function inventoryLarkDocuments({ mode = "preview", query = "", maxItems = 20, maxFiles = 100, maxWikiNodes = 200, connectionId = "" }) {
   const search = await searchLarkDocuments(query, "", Math.min(maxItems, 20), connectionId);
   const wikiSpaces = await listWikiSpaces("", 50, connectionId);

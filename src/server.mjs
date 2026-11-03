@@ -183,7 +183,20 @@ const { ensureDefaultOutputFolder, listAllDriveFiles, listDriveFiles, resolveUse
 const { readLarkFile } = createFileService({ larkGetBuffer, extensionFor, parseSpreadsheet, mammoth, pdfParse, getConnectionWebBaseUrl });
 
 const { searchDriveFileNames, searchLarkDocuments, searchWikiTitles } = createSearchService({ listWikiSpaces, listWikiNodes, listDriveFiles, larkRequest, getConnectionWebBaseUrl });
-const { inventoryLarkDocuments } = createInventoryService({ searchLarkDocuments, listWikiSpaces, listAllWikiDocuments, listAllDriveFiles, enrichDocumentPermissions, readLarkDocument, readLarkFile, getConnectionWebBaseUrl });
+const { inventoryLarkDocuments } = createInventoryService({
+  searchLarkDocuments,
+  listWikiSpaces,
+  listAllWikiDocuments,
+  listAllDriveFiles,
+  enrichDocumentPermissions,
+  readLarkDocument,
+  readLarkFile,
+  getConnectionBot,
+  getConnectionWebBaseUrl,
+  defaultOutputFolderName,
+  metadataSummary,
+  summarizeText,
+});
 function driveTokenFromInput(input) {
   if (input.startsWith("http://") || input.startsWith("https://")) {
     const match = new URL(input).pathname.match(/\/drive\/file\/([^/]+)/);
