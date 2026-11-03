@@ -21,6 +21,25 @@ function platformRoute(requestUrl) {
       return { platform, routeUrl, issuer: `${issuerForRequest(requestUrl)}/${platform}`, scoped: true };
     }
   }
+  const aliases = [
+    ["/.well-known/oauth-authorization-server/lark", "lark", "/.well-known/oauth-authorization-server"],
+    ["/.well-known/oauth-authorization-server/feishu", "feishu", "/.well-known/oauth-authorization-server"],
+    ["/.well-known/openid-configuration/lark", "lark", "/.well-known/openid-configuration"],
+    ["/.well-known/openid-configuration/feishu", "feishu", "/.well-known/openid-configuration"],
+    ["/.well-known/oauth-protected-resource/lark/mcp", "lark", "/.well-known/oauth-protected-resource/mcp"],
+    ["/.well-known/oauth-protected-resource/feishu/mcp", "feishu", "/.well-known/oauth-protected-resource/mcp"],
+    ["/.well-known/oauth-authorization-server", "lark", "/.well-known/oauth-authorization-server"],
+    ["/.well-known/openid-configuration", "lark", "/.well-known/openid-configuration"],
+    ["/.well-known/oauth-protected-resource", "lark", "/.well-known/oauth-protected-resource"],
+    ["/register", "lark", "/oauth/register"],
+  ];
+  const alias = aliases.find(([pathname]) => requestUrl.pathname === pathname);
+  if (alias) {
+    const [, platform, pathname] = alias;
+    const routeUrl = new URL(requestUrl);
+    routeUrl.pathname = pathname;
+    return { platform, routeUrl, issuer: `${issuerForRequest(requestUrl)}/${platform}`, scoped: true };
+  }
   return { platform: "lark", routeUrl: requestUrl, issuer: issuerForRequest(requestUrl), scoped: false };
 }
 
@@ -56,8 +75,6 @@ export function createHttpServer({
       || requestUrl.pathname === "/oauth/authorize"
       || requestUrl.pathname === "/oauth/token"
       || requestUrl.pathname === "/oauth/register"
-      || requestUrl.pathname === "/.well-known/oauth-authorization-server"
-      || requestUrl.pathname === "/.well-known/oauth-protected-resource"
       || requestUrl.pathname === "/.well-known/oauth-protected-resource/mcp";
     if (!scoped && unscopedMcpRoute) {
       json(res, 400, {

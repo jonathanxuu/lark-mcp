@@ -4,7 +4,7 @@ export async function handleOAuthDiscoveryRoutes({ req, res, requestUrl, mcpIssu
     json(res, 200, { resource: `${issuer}/mcp`, authorization_servers: [issuer], bearer_methods_supported: ["header"], scopes_supported: ["lark:read", "lark:write"] });
     return true;
   }
-  if (requestUrl.pathname === "/.well-known/oauth-authorization-server") {
+  if (requestUrl.pathname === "/.well-known/oauth-authorization-server" || requestUrl.pathname === "/.well-known/openid-configuration") {
     json(res, 200, mcpOAuthMetadata(mcpIssuerForRequest(requestUrl)));
     return true;
   }
