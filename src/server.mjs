@@ -61,11 +61,11 @@ function refreshBotRegistry() {
 function saveManagedBot({ id, platform = "lark", name, appId, appSecret, outputFolderToken = "", description = "", organizationId = "", organizationName = "", tenantKey = "", bootstrap = false, redirectUris = [] }) {
   platform = String(platform).toLowerCase();
   getProvider(platform);
-  const existing = readBotStore().find((bot) => bot.id === id);
+  const existing = readBotStore(botStorePath).find((bot) => bot.id === id);
   if (existing && ((organizationId && existing.organization_id !== organizationId) || (existing.platform ?? "lark") !== platform)) {
     throw new Error(`Bot id "${id}" is already registered to another organization or platform`);
   }
-  const bots = readBotStore().filter((bot) => bot.id !== id);
+  const bots = readBotStore(botStorePath).filter((bot) => bot.id !== id);
   if (bootstrap) {
     for (const bot of bots) {
       if (bot.organization_id === organizationId && (bot.platform ?? "lark") === platform) bot.bootstrap = false;
@@ -85,14 +85,14 @@ function saveManagedBot({ id, platform = "lark", name, appId, appSecret, outputF
     redirect_uris: redirectUris,
     bootstrap,
   });
-  writeBotStore(bots);
+  writeBotStore(botStorePath, bots);
   refreshBotRegistry();
   return getBot(id);
 }
 
 function removeManagedBot(id) {
-  const bots = readBotStore().filter((bot) => bot.id !== id);
-  writeBotStore(bots);
+  const bots = readBotStore(botStorePath).filter((bot) => bot.id !== id);
+  writeBotStore(botStorePath, bots);
   refreshBotRegistry();
 }
 
