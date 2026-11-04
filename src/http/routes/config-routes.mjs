@@ -100,18 +100,18 @@ function renderPage(authenticated) {
             <label class="wide">默认共享文件夹 Token<input id="output-folder-token" placeholder="可选" /></label>
             <label class="wide">Redirect URI<input id="redirect-uri" value="${DEFAULT_REDIRECT_URI}" /></label>
             <label class="check wide"><input id="bootstrap" type="checkbox" /> 设为该组织的默认 Bot</label>
-            <div class="actions wide"><button class="primary" type="submit">确定添加 <span>→</span></button><button class="ghost" type="button" id="reset-form">清空</button></div>
+            <div class="actions wide"><button class="primary" type="submit">确定添加</button><button class="ghost" type="button" id="reset-form">清空</button></div>
             <p id="form-message" class="message wide"></p>
           </form>
         </div>
-        <div class="panel oauth-panel"><div class="panel-title"><span class="icon">↗</span><div><h2>OAuth 参数</h2><p>复制到 Counso 的 MCP 配置页面</p></div></div>
+        <div class="panel oauth-panel"><div class="panel-title"><span class="icon">↗</span><div><h2>OAuth 参数查询</h2><p>复制到 Counso 的 MCP 配置页面</p></div></div>
           <form id="oauth-query-form" class="query-row"><input id="oauth-app-id" placeholder="输入 App ID 查询 OAuth 参数" required /><button class="secondary" type="submit">查询</button></form>
-          <div id="oauth-result" class="result empty"><div class="empty-icon">⌘</div><p>提交 Bot 后，OAuth 参数会显示在这里</p></div>
+          <div id="oauth-result" class="result blank"></div>
         </div>
       </section>
       <footer>Protected by COUNSO Lark MCP · App ID 已注册时请联系管理员处理</footer>
     </main>`;
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>COUNSO Lark MCP · 配置中心</title><style>${styles()}</style></head><body>${authenticated ? app : login}<script>${script(authenticated)}</script></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>COUNSO Lark MCP · 配置</title><style>${styles()}</style><style>.query-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:10px}.actions{justify-content:flex-end}.result.blank{display:none}</style></head><body>${authenticated ? app : login}<script>${script(authenticated)}</script></body></html>`;
 }
 
 function styles() {
