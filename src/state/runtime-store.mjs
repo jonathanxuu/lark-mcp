@@ -1,13 +1,16 @@
 import crypto from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { sessionStoreKey, sessionStorePath } from "../config/index.mjs";
+import { createSessionStore } from "../storage/session-store.mjs";
 
 export const appAccessTokenCache = new Map();
 export const tenantAccessTokenCache = new Map();
 export const oauthStates = new Map();
-export const userConnections = new Map();
-export const mcpClients = new Map();
+const sessionStore = createSessionStore({ filePath: sessionStorePath, secret: sessionStoreKey });
+export const userConnections = sessionStore.userConnections;
+export const mcpClients = sessionStore.mcpClients;
 export const mcpAuthorizationCodes = new Map();
-export const mcpAccessTokens = new Map();
+export const mcpAccessTokens = sessionStore.mcpAccessTokens;
 export const mcpConnectionContext = new AsyncLocalStorage();
 
 export function randomToken() {

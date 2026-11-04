@@ -50,7 +50,9 @@ export function createAuthService({ botRegistry, getBot, getConnectionBot, getPr
     if (identity === "user") {
       if (connection.accessToken && Date.now() < connection.expiresAt) return connection.accessToken;
       if (!connection.refreshToken) throw new Error("Lark user OAuth refresh token is missing");
-      return refreshUserAccessToken(connection);
+      const accessToken = await refreshUserAccessToken(connection);
+      userConnections.set(connectionId, connection);
+      return accessToken;
     }
     return getTenantAccessToken(connectionId);
   }

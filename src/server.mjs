@@ -5,7 +5,7 @@ import { z } from "zod";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import * as XLSX from "xlsx";
-import { adminToken, botStoreKey, botStorePath, clientBotMapPath, defaultOutputFolderName, staticBotConfigPath } from "./config/index.mjs";
+import { adminToken, botStoreKey, botStorePath, clientBotMapPath, configAccessKey, defaultOutputFolderName, staticBotConfigPath } from "./config/index.mjs";
 import { getProvider, providers } from "./providers/registry.mjs";
 import { createApiClient } from "./providers/api-client.mjs";
 import { encryptSecret, loadBotRegistry, readBotStore, writeBotStore } from "./storage/bot-store.mjs";
@@ -66,6 +66,8 @@ function saveManagedBot({ id, platform = "lark", name, appId, appSecret, outputF
     throw new Error(`Bot id "${id}" is already registered to another organization or platform`);
   }
   const bots = readBotStore(botStorePath).filter((bot) => bot.id !== id);
+  const configuredAt = existing?.configured_at ?? new Date().toISOString();
+  const updatedAt = new Date().toISOString();
   if (bootstrap) {
     for (const bot of bots) {
       if (bot.organization_id === organizationId && (bot.platform ?? "lark") === platform) bot.bootstrap = false;
@@ -83,6 +85,8 @@ function saveManagedBot({ id, platform = "lark", name, appId, appSecret, outputF
     organization_name: organizationName,
     tenant_key: tenantKey,
     redirect_uris: redirectUris,
+    configured_at: configuredAt,
+    updated_at: updatedAt,
     bootstrap,
   });
   writeBotStore(botStorePath, bots);
@@ -105,6 +109,8 @@ function publicBot(bot) {
     description: bot.description,
     organization_id: bot.organizationId || null,
     organization_name: bot.organizationName || null,
+    configured_at: bot.configuredAt ?? null,
+    updated_at: bot.updatedAt ?? null,
   };
 }
 
@@ -277,6 +283,7 @@ const httpServer = createHttpServer({
   randomToken,
   pkceChallenge,
   crypto,
+  configAccessKey,
 });
 startHttpServer(httpServer);
 

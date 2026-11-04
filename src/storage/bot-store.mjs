@@ -77,6 +77,8 @@ export function loadStaticBotRegistry({ providers, getProvider, staticBotConfigP
       organizationId: bot.organization_id ?? bot.organizationId ?? "",
       organizationName: bot.organization_name ?? bot.organizationName ?? "",
       tenantKey: bot.tenant_key ?? bot.tenantKey ?? "",
+      configuredAt: bot.configured_at ?? bot.configuredAt ?? null,
+      updatedAt: bot.updated_at ?? bot.updatedAt ?? null,
       bootstrap: bot.bootstrap === true,
       redirectUris: Array.isArray(bot.redirect_uris) ? bot.redirect_uris : [],
     };
@@ -100,6 +102,8 @@ export function loadBotRegistry({ botStorePath, botStoreKey, providers, getProvi
     organizationId: bot.organization_id ?? "",
     organizationName: bot.organization_name ?? "",
     tenantKey: bot.tenant_key ?? "",
+    configuredAt: bot.configured_at ?? null,
+    updatedAt: bot.updated_at ?? null,
     bootstrap: bot.bootstrap === true,
     redirectUris: Array.isArray(bot.redirect_uris) ? bot.redirect_uris : [],
     source: "store",

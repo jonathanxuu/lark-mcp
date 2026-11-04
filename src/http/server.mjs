@@ -5,6 +5,7 @@ import { adminToken, port, publicBaseUrl } from "../config/index.mjs";
 import { json, parseFormBody, readRequestBody, redirect } from "./response.mjs";
 import { mcpOAuthMetadata } from "../oauth/metadata.mjs";
 import { handleOAuthStatusRoute } from "./routes/oauth-status-route.mjs";
+import { handleConfigRoutes } from "./routes/config-routes.mjs";
 import { handleOAuthDiscoveryRoutes } from "./routes/oauth-discovery-routes.mjs";
 import { createOAuthRoutes } from "./routes/oauth-routes.mjs";
 
@@ -65,6 +66,7 @@ export function createHttpServer({
   randomToken,
   pkceChallenge,
   crypto,
+  configAccessKey,
 }) {
   return http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -85,6 +87,7 @@ export function createHttpServer({
     }
 
     if (await handleOAuthDiscoveryRoutes({ req, res, requestUrl: routeUrl, mcpIssuerForRequest: () => issuer, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients, resolveClientConfig })) return;
+    if (await handleConfigRoutes({ req, res, requestUrl, configAccessKey, botRegistry: getBotRegistry(), providers, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, redirect, crypto })) return;
     if (await handleAdminBotRoutes({ req, res, requestUrl: routeUrl, adminToken, botRegistry: getBotRegistry(), providers, publicBot, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, crypto })) return;
     if (await createOAuthRoutes({
       crypto, req, res, requestUrl: routeUrl, platform, mcpAccessTokens,
