@@ -5,7 +5,7 @@ import { z } from "zod";
 import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import * as XLSX from "xlsx";
-import { adminToken, botStoreKey, botStorePath, clientBotMapPath, configAccessKey, defaultOutputFolderName, staticBotConfigPath } from "./config/index.mjs";
+import { adminToken, botStoreKey, botStorePath, clientBotMapPath, configAccessKey, defaultOutputFolderName, publicBaseUrl, staticBotConfigPath } from "./config/index.mjs";
 import { getProvider, providers } from "./providers/registry.mjs";
 import { createApiClient } from "./providers/api-client.mjs";
 import { encryptSecret, loadBotRegistry, readBotStore, writeBotStore } from "./storage/bot-store.mjs";
@@ -284,6 +284,7 @@ const httpServer = createHttpServer({
   pkceChallenge,
   crypto,
   configAccessKey,
+  configPublicBaseUrl: publicBaseUrl,
 });
 startHttpServer(httpServer);
 

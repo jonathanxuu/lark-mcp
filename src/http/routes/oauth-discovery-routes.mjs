@@ -1,7 +1,8 @@
 export async function handleOAuthDiscoveryRoutes({ req, res, requestUrl, mcpIssuerForRequest, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients, resolveClientConfig }) {
   if (requestUrl.pathname === "/.well-known/oauth-protected-resource/mcp" || requestUrl.pathname === "/.well-known/oauth-protected-resource") {
     const issuer = mcpIssuerForRequest(requestUrl);
-    json(res, 200, { resource: `${issuer}/mcp`, authorization_servers: [issuer], bearer_methods_supported: ["header"], scopes_supported: ["lark:read", "lark:write"] });
+    const platform = issuer.endsWith("/feishu") ? "feishu" : "lark";
+    json(res, 200, { resource: `${issuer}/mcp`, authorization_servers: [issuer], bearer_methods_supported: ["header"], scopes_supported: [`${platform}:read`, `${platform}:write`] });
     return true;
   }
   if (requestUrl.pathname === "/.well-known/oauth-authorization-server" || requestUrl.pathname === "/.well-known/openid-configuration") {

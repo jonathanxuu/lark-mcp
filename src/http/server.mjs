@@ -67,6 +67,7 @@ export function createHttpServer({
   pkceChallenge,
   crypto,
   configAccessKey,
+  configPublicBaseUrl,
 }) {
   return http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
@@ -87,7 +88,7 @@ export function createHttpServer({
     }
 
     if (await handleOAuthDiscoveryRoutes({ req, res, requestUrl: routeUrl, mcpIssuerForRequest: () => issuer, mcpOAuthMetadata, json, parseFormBody, readRequestBody, randomToken, mcpClients, resolveClientConfig })) return;
-    if (await handleConfigRoutes({ req, res, requestUrl, configAccessKey, botRegistry: getBotRegistry(), providers, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, redirect, crypto })) return;
+    if (await handleConfigRoutes({ req, res, requestUrl, configAccessKey, publicBaseUrl: configPublicBaseUrl, botRegistry: getBotRegistry(), providers, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, redirect, crypto })) return;
     if (await handleAdminBotRoutes({ req, res, requestUrl: routeUrl, adminToken, botRegistry: getBotRegistry(), providers, publicBot, saveManagedBot, removeManagedBot, getBot, json, parseFormBody, readRequestBody, crypto })) return;
     if (await createOAuthRoutes({
       crypto, req, res, requestUrl: routeUrl, platform, mcpAccessTokens,
